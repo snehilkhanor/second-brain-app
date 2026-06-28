@@ -368,29 +368,6 @@ export default function App() {
   input,textarea{font-family:'Inter'}
   `;
 
-  const DecRow=({d,compact})=>{
-    const isRes=!!resolved[d.id], isOpen=openDec===d.id;
-    return (
-      <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
-        <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
-          <div style={{flexShrink:0,width:20,height:20,borderRadius:6,marginTop:1,display:"flex",alignItems:"center",justifyContent:"center",background:isRes?"#5BD6A8":"transparent",border:isRes?"none":"1.5px solid #3A4366"}}>{isRes&&<Check size={13} color="#0E1424" strokeWidth={3}/>}</div>
-          <div style={{flex:1}}>
-            <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
-              {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
-            </div>
-            <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{norm.name[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
-          </div>
-          {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
-        </div>
-        {isOpen&&!isRes&&(<div className="exp" style={{marginTop:9,marginLeft:29}}>
-          <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder="What did you decide?" style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
-          <button onClick={()=>resolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> Resolve</button>
-        </div>)}
-        {isRes&&<button onClick={()=>reopen(d.id)} className="tap mono" style={{marginLeft:29,marginTop:4,background:"transparent",border:"none",color:"#6B7494",fontSize:10,display:"flex",alignItems:"center",gap:4,padding:0}}><RotateCcw size={10}/> reopen</button>}
-      </div>
-    );
-  };
-
   return (
     <div className="wrap">
       <style>{css}</style>
@@ -452,7 +429,7 @@ export default function App() {
         <div className="card" style={{padding:16}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}><span className="disp" style={{fontWeight:600,fontSize:14}}>All decisions</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
           <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
-          {allDecs.map(d=><DecRow key={d.id} d={d} compact/>)}
+          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}
         </div>
         <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
@@ -473,7 +450,7 @@ export default function App() {
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
-          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact/>)}</>)}
+          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}</>)}
         </div>
       )}
 
@@ -511,3 +488,28 @@ export default function App() {
   );
 }
 function Stat({icon,v,l,c}){return(<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{color:c}}>{icon}</span><span className="mono" style={{fontSize:15,fontWeight:700}}>{v}</span><span className="mono" style={{fontSize:10,color:"#8A94B0"}}>{l}</span></div>);}
+
+// Module-scope (stable identity) so typing in the outcome box doesn't remount
+// the textarea and drop focus / dismiss the keyboard.
+function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, nameMap}) {
+  const isRes=!!resolved[d.id], isOpen=openDec===d.id;
+  return (
+    <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
+      <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
+        <div style={{flexShrink:0,width:20,height:20,borderRadius:6,marginTop:1,display:"flex",alignItems:"center",justifyContent:"center",background:isRes?"#5BD6A8":"transparent",border:isRes?"none":"1.5px solid #3A4366"}}>{isRes&&<Check size={13} color="#0E1424" strokeWidth={3}/>}</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
+            {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
+          </div>
+          <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{nameMap[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
+        </div>
+        {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
+      </div>
+      {isOpen&&!isRes&&(<div className="exp" style={{marginTop:9,marginLeft:29}}>
+        <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder="What did you decide?" style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
+        <button onClick={()=>onResolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> Resolve</button>
+      </div>)}
+      {isRes&&<button onClick={()=>onReopen(d.id)} className="tap mono" style={{marginLeft:29,marginTop:4,background:"transparent",border:"none",color:"#6B7494",fontSize:10,display:"flex",alignItems:"center",gap:4,padding:0}}><RotateCcw size={10}/> reopen</button>}
+    </div>
+  );
+}
