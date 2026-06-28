@@ -112,7 +112,7 @@ export default function App() {
   const norm=useMemo(()=>normalize(graph),[graph]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
-  const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null);
+  const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false);
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
@@ -209,6 +209,21 @@ export default function App() {
     showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
   };
 
+  // Link styling helpers — read the live "active" set (selected node + neighbours).
+  const endpointId=(e)=> (typeof e==="object"&&e)?e.id:e;
+  const linkIsActive=(l)=>{ const a=activeRef.current; return a && a.has(endpointId(l.source)) && a.has(endpointId(l.target)); };
+  const linkColorFor=(l)=>{ const a=activeRef.current; if(!a) return "#8B7CFF"; return linkIsActive(l)?"#C9BFFF":"#39406A"; };
+  const linkWidthFor=(l)=>{ const a=activeRef.current; if(!a) return 0.5; return linkIsActive(l)?1.6:0.25; };
+
+  // Recompute the active set on selection/data change and refresh link styling
+  // (re-applying the accessors makes 3d-force-graph re-evaluate every link).
+  useEffect(()=>{
+    let act=null;
+    if(selected){ act=new Set([selected]); norm.links.forEach(([s,t])=>{ if(s===selected)act.add(t); if(t===selected)act.add(s); }); }
+    activeRef.current=act;
+    const G=graphObjRef.current; if(G){ G.linkColor(linkColorFor).linkWidth(linkWidthFor); }
+  },[selected,norm]); // eslint-disable-line
+
   // --- 3D engine: created once; data synced separately when it changes -------
   useEffect(()=>{
     const mount=mountRef.current; if(!mount) return;
@@ -219,7 +234,7 @@ export default function App() {
       const col=COL[node.type] ?? COL.rival;
       const r=4+(node.connections||1)*1.8; const ng=new THREE.Group();
       const core=new THREE.Mesh(new THREE.SphereGeometry(r,20,20),
-        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60}));
+        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60,transparent:true,opacity:1}));
       core.userData={id:node.id,r}; ng.add(core);
       const typeHalo=new THREE.Mesh(new THREE.SphereGeometry(r*1.7,16,16),
         new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
@@ -237,9 +252,11 @@ export default function App() {
       .showNavInfo(false)
       .nodeThreeObject(makeNode)
       .nodeLabel(()=>"")                     // labels are sprites; suppress the hover tooltip
-      .linkColor(()=>"#8B7CFF")
-      .linkOpacity(0.22)
-      .linkWidth(0)
+      // Obsidian-style links: visible by default; on selection, the selected
+      // node's links brighten and thicken while the rest recede.
+      .linkColor(linkColorFor)
+      .linkWidth(linkWidthFor)
+      .linkOpacity(0.6)
       .enableNodeDrag(false)   // match the design: drag rotates the cloud, tap selects a node
       .onNodeClick(n=>setSelected(n.id))
       .onBackgroundClick(()=>setSelected(null));
@@ -266,17 +283,23 @@ export default function App() {
       raf=requestAnimationFrame(decorate); clock+=0.05;
       const res=resRef.current, md=modeRef.current, sel=selRef.current, n0=normRef.current;
       controls.autoRotate = !sel;
+      const act=activeRef.current;   // null = nothing selected; otherwise selected + neighbours
       n0.nodes.forEach(n=>{
         const R=refsRef.current[n.id]; if(!R) return;
         const open=(n0.decsByNode[n.id]||[]).filter(d=>!res[d]).length;
         const isSel=sel===n.id; const ts=isSel?1.5:1;
+        const dim = act && !act.has(n.id);   // a node is dimmed when it's outside the selection's neighbourhood
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
-        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1;
+        // Fade dimmed nodes' bodies and labels; connected nodes stay full-strength.
+        R.core.material.opacity += ((dim?0.18:1) - R.core.material.opacity)*0.2;
+        R.ng.children.forEach(ch=>{ if(ch.isSprite && ch!==R.badge) ch.material.opacity += ((dim?0.12:1) - ch.material.opacity)*0.2; });
+        const lit = dim?0.18:1;
+        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1*lit;
           const pulse=0.12+0.10*Math.sin(clock*1.4);
-          R.alertHalo.material.opacity = open>0 ? pulse : 0;
-          R.core.material.emissiveIntensity = isSel?1.0:(open>0?0.85:0.5);
-        } else { R.alertHalo.material.opacity=0; R.typeHalo.material.opacity=0; R.core.material.emissiveIntensity=isSel?0.9:0.32;
-          if(open>0){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
+          R.alertHalo.material.opacity = (open>0 ? pulse : 0)*lit;
+          R.core.material.emissiveIntensity = (isSel?1.0:(open>0?0.85:0.5))*(dim?0.3:1);
+        } else { R.alertHalo.material.opacity=0; R.typeHalo.material.opacity=0; R.core.material.emissiveIntensity=(isSel?0.9:0.32)*(dim?0.3:1);
+          if(open>0&&!dim){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
               b.position.set(R.r*1.1,R.r*1.1,0); R.ng.add(b); R.badge=b; } R.badge.visible=true; }
           else R.badge.visible=false;
         }
@@ -345,29 +368,6 @@ export default function App() {
   input,textarea{font-family:'Inter'}
   `;
 
-  const DecRow=({d,compact})=>{
-    const isRes=!!resolved[d.id], isOpen=openDec===d.id;
-    return (
-      <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
-        <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
-          <div style={{flexShrink:0,width:20,height:20,borderRadius:6,marginTop:1,display:"flex",alignItems:"center",justifyContent:"center",background:isRes?"#5BD6A8":"transparent",border:isRes?"none":"1.5px solid #3A4366"}}>{isRes&&<Check size={13} color="#0E1424" strokeWidth={3}/>}</div>
-          <div style={{flex:1}}>
-            <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
-              {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
-            </div>
-            <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{norm.name[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
-          </div>
-          {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
-        </div>
-        {isOpen&&!isRes&&(<div className="exp" style={{marginTop:9,marginLeft:29}}>
-          <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder="What did you decide?" style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
-          <button onClick={()=>resolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> Resolve</button>
-        </div>)}
-        {isRes&&<button onClick={()=>reopen(d.id)} className="tap mono" style={{marginLeft:29,marginTop:4,background:"transparent",border:"none",color:"#6B7494",fontSize:10,display:"flex",alignItems:"center",gap:4,padding:0}}><RotateCcw size={10}/> reopen</button>}
-      </div>
-    );
-  };
-
   return (
     <div className="wrap">
       <style>{css}</style>
@@ -429,7 +429,7 @@ export default function App() {
         <div className="card" style={{padding:16}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}><span className="disp" style={{fontWeight:600,fontSize:14}}>All decisions</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
           <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
-          {allDecs.map(d=><DecRow key={d.id} d={d} compact/>)}
+          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}
         </div>
         <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
@@ -450,7 +450,7 @@ export default function App() {
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
-          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact/>)}</>)}
+          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}</>)}
         </div>
       )}
 
@@ -488,3 +488,28 @@ export default function App() {
   );
 }
 function Stat({icon,v,l,c}){return(<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{color:c}}>{icon}</span><span className="mono" style={{fontSize:15,fontWeight:700}}>{v}</span><span className="mono" style={{fontSize:10,color:"#8A94B0"}}>{l}</span></div>);}
+
+// Module-scope (stable identity) so typing in the outcome box doesn't remount
+// the textarea and drop focus / dismiss the keyboard.
+function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, nameMap}) {
+  const isRes=!!resolved[d.id], isOpen=openDec===d.id;
+  return (
+    <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
+      <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
+        <div style={{flexShrink:0,width:20,height:20,borderRadius:6,marginTop:1,display:"flex",alignItems:"center",justifyContent:"center",background:isRes?"#5BD6A8":"transparent",border:isRes?"none":"1.5px solid #3A4366"}}>{isRes&&<Check size={13} color="#0E1424" strokeWidth={3}/>}</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
+            {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
+          </div>
+          <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{nameMap[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
+        </div>
+        {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
+      </div>
+      {isOpen&&!isRes&&(<div className="exp" style={{marginTop:9,marginLeft:29}}>
+        <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder="What did you decide?" style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
+        <button onClick={()=>onResolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> Resolve</button>
+      </div>)}
+      {isRes&&<button onClick={()=>onReopen(d.id)} className="tap mono" style={{marginLeft:29,marginTop:4,background:"transparent",border:"none",color:"#6B7494",fontSize:10,display:"flex",alignItems:"center",gap:4,padding:0}}><RotateCcw size={10}/> reopen</button>}
+    </div>
+  );
+}
