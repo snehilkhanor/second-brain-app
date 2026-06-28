@@ -6,4 +6,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   base: "/second-brain-app/",
   plugins: [react()],
+  // 3d-force-graph and our custom node objects must share ONE copy of three,
+  // or the custom glowing spheres won't render. Force a single instance.
+  resolve: { dedupe: ["three"] },
 });

@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import * as THREE from "three";
+import ForceGraph3D from "3d-force-graph";
 import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2 } from "lucide-react";
 
 const NODES = [
@@ -54,6 +55,23 @@ const COL = { hub:0xF5B344, venture:0x8B7CFF, person:0x5BD6A8, org:0x5BD6A8, riv
 const HEX = { hub:"#F5B344", venture:"#8B7CFF", person:"#5BD6A8", org:"#5BD6A8", rival:"#6B7494" };
 const NAME = Object.fromEntries(NODES.map(n=>[n.id,n.label]));
 const decsByNode = {}; Object.entries(DEC).forEach(([id,v])=>{ (decsByNode[v.node]=decsByNode[v.node]||[]).push(id); });
+
+// The graph engine is fed data in the brief's section-3 `graph.json` shape:
+//   { nodes:[{id,label,type,connections,open_decisions}], links:[{source,target,label}], open_decisions:[...] }
+// For now this is compiled from the design's sample data above. In Step 3 the
+// exact same shape will instead be fetched from the private brain repo, so the
+// engine code below won't need to change.
+function buildGraphJson() {
+  const deg = {};
+  LINKS.forEach(([s,t])=>{ deg[s]=(deg[s]||0)+1; deg[t]=(deg[t]||0)+1; });
+  const openByNode = {};
+  Object.values(DEC).forEach(d=>{ openByNode[d.node]=(openByNode[d.node]||0)+1; });
+  return {
+    nodes: NODES.map(n=>({ id:n.id, label:n.label, type:n.kind, connections:deg[n.id]||0, open_decisions:openByNode[n.id]||0 })),
+    links: LINKS.map(([source,target,label])=>({ source, target, label })),
+    open_decisions: Object.entries(DEC).map(([id,d])=>({ id, card:d.node, text:d.text })),
+  };
+}
 
 function textSprite(text, color, bold) {
   const c=document.createElement("canvas"); const x=c.getContext("2d"); const f=26;
@@ -110,78 +128,71 @@ export default function App() {
 
   useEffect(()=>{
     const mount=mountRef.current; if(!mount) return;
-    let W=mount.clientWidth, H=mount.clientHeight;
-    const scene=new THREE.Scene();
-    const camera=new THREE.PerspectiveCamera(60,W/H,0.1,3000); let camZ=210; camera.position.z=camZ;
-    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
-    renderer.setSize(W,H); renderer.setPixelRatio(Math.min(window.devicePixelRatio,2)); mount.appendChild(renderer.domElement);
-    scene.add(new THREE.AmbientLight(0xffffff,0.7));
-    const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
-    const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
-    const group=new THREE.Group(); scene.add(group);
 
-    const deg={}; LINKS.forEach(l=>{deg[l[0]]=(deg[l[0]]||0)+1; deg[l[1]]=(deg[l[1]]||0)+1;});
-    const P={}; NODES.forEach(n=>{P[n.id]={x:(Math.random()-.5)*120,y:(Math.random()-.5)*120,z:(Math.random()-.5)*120,vx:0,vy:0,vz:0};});
+    // Data in the brief's graph.json shape (compiled from sample data for now;
+    // Step 3 swaps the source to the private brain repo, same shape).
+    const data=buildGraphJson();
+    const refs={};   // id -> { ng, core, typeHalo, alertHalo, badge, r }
 
-    const cores=[]; const refs={};
-    NODES.forEach(n=>{
-      const r=4+(deg[n.id]||1)*1.8; const ng=new THREE.Group();
+    // One node's visual — ported verbatim from the design: glowing core sized by
+    // connections, type-coloured halo, amber alert halo, label sprite, count badge.
+    function makeNode(node){
+      const col=COL[node.type] ?? COL.rival;
+      const r=4+(node.connections||1)*1.8; const ng=new THREE.Group();
       const core=new THREE.Mesh(new THREE.SphereGeometry(r,20,20),
-        new THREE.MeshPhongMaterial({color:COL[n.kind],emissive:COL[n.kind],emissiveIntensity:0.5,shininess:60}));
-      core.userData={id:n.id,r}; ng.add(core);
+        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60}));
+      core.userData={id:node.id,r}; ng.add(core);
       const typeHalo=new THREE.Mesh(new THREE.SphereGeometry(r*1.7,16,16),
-        new THREE.MeshBasicMaterial({color:COL[n.kind],transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
+        new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
       const alertHalo=new THREE.Mesh(new THREE.SphereGeometry(r*2.1,16,16),
         new THREE.MeshBasicMaterial({color:0xF5B344,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(alertHalo);
-      const label=textSprite(n.label,"#AEB7D4",false); label.position.set(0,r+7,0); ng.add(label);
+      const label=textSprite(node.label,"#AEB7D4",false); label.position.set(0,r+7,0); ng.add(label);
       const badge=badgeSprite(0); badge.position.set(r*1.1,r*1.1,0); badge.visible=false; ng.add(badge);
-      group.add(ng); cores.push(core); refs[n.id]={ng,core,typeHalo,alertHalo,badge,r};
-    });
+      refs[node.id]={ng,core,typeHalo,alertHalo,badge,r};
+      return ng;
+    }
 
-    const lg=new THREE.BufferGeometry(); const lp=new Float32Array(LINKS.length*6);
-    lg.setAttribute("position",new THREE.BufferAttribute(lp,3));
-    group.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x8B7CFF,transparent:true,opacity:0.22})));
+    // The 3d-force-graph engine: it owns physics, camera, drag and pinch-zoom.
+    const Graph=ForceGraph3D({controlType:"orbit"})(mount)
+      .graphData(data)
+      .backgroundColor("rgba(0,0,0,0)")     // transparent so the CSS radial gradient shows through
+      .showNavInfo(false)
+      .nodeThreeObject(makeNode)
+      .nodeLabel(()=>"")                     // labels are sprites; suppress the hover tooltip
+      .linkColor(()=>"#8B7CFF")
+      .linkOpacity(0.22)
+      .linkWidth(0)
+      .enableNodeDrag(false)   // match the design: drag rotates the cloud, tap selects a node
+      .onNodeClick(n=>setSelected(n.id))
+      .onBackgroundClick(()=>setSelected(null));
 
-    function step(){const REST=44,KR=2400,KS=0.05,KC=0.016,DAMP=0.86,DT=0.7;
-      NODES.forEach(a=>{let fx=0,fy=0,fz=0;const pa=P[a.id];
-        NODES.forEach(b=>{if(a.id===b.id)return;const pb=P[b.id];let dx=pa.x-pb.x,dy=pa.y-pb.y,dz=pa.z-pb.z;
-          let d2=dx*dx+dy*dy+dz*dz+.01,d=Math.sqrt(d2);const f=KR/d2;fx+=dx/d*f;fy+=dy/d*f;fz+=dz/d*f;});
-        fx-=pa.x*KC;fy-=pa.y*KC;fz-=pa.z*KC;pa._fx=fx;pa._fy=fy;pa._fz=fz;});
-      LINKS.forEach(l=>{const pa=P[l[0]],pb=P[l[1]];let dx=pb.x-pa.x,dy=pb.y-pa.y,dz=pb.z-pa.z;
-        let d=Math.sqrt(dx*dx+dy*dy+dz*dz)+.01;const f=(d-REST)*KS,ux=dx/d,uy=dy/d,uz=dz/d;
-        pa._fx+=ux*f;pa._fy+=uy*f;pa._fz+=uz*f;pb._fx-=ux*f;pb._fy-=uy*f;pb._fz-=uz*f;});
-      NODES.forEach(n=>{const p=P[n.id];p.vx=(p.vx+p._fx*DT)*DAMP;p.vy=(p.vy+p._fy*DT)*DAMP;p.vz=(p.vz+p._fz*DT)*DAMP;
-        p.x+=p.vx*DT;p.y+=p.vy*DT;p.z+=p.vz*DT;});}
+    // Keep the cloud tight, like the design's hand-tuned springs.
+    Graph.d3Force("charge").strength(-160);
+    Graph.d3Force("link").distance(46);
 
-    const rot={x:-0.2,y:0}; let dragging=false,lastX=0,lastY=0,moved=0,downT=0;
-    const ray=new THREE.Raycaster(); const ndc=new THREE.Vector2();
-    function down(e){dragging=true;moved=0;downT=Date.now();const t=e.touches?e.touches[0]:e;lastX=t.clientX;lastY=t.clientY;}
-    function move(e){if(!dragging)return;const t=e.touches?e.touches[0]:e;const dx=t.clientX-lastX,dy=t.clientY-lastY;
-      lastX=t.clientX;lastY=t.clientY;rot.y+=dx*.006;rot.x+=dy*.006;rot.x=Math.max(-1.3,Math.min(1.3,rot.x));moved+=Math.abs(dx)+Math.abs(dy);}
-    function up(e){const dt=Date.now()-downT;dragging=false;
-      if(moved<7&&dt<350){const t=e.changedTouches?e.changedTouches[0]:e;const rect=renderer.domElement.getBoundingClientRect();
-        ndc.x=((t.clientX-rect.left)/rect.width)*2-1;ndc.y=-((t.clientY-rect.top)/rect.height)*2+1;
-        scene.updateMatrixWorld(true);ray.setFromCamera(ndc,camera);const hits=ray.intersectObjects(cores,false);
-        if(hits.length)setSelected(hits[0].object.userData.id);else setSelected(null);}}
-    let pinch=0,pz=camZ;
-    function tmove(e){if(e.touches&&e.touches.length===2){e.preventDefault();
-      const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-      if(!pinch){pinch=d;pz=camZ;}else camZ=Math.max(110,Math.min(520,pz*(pinch/d)));}}
-    function tend(){pinch=0;}
-    function wheel(e){e.preventDefault();camZ=Math.max(110,Math.min(520,camZ+e.deltaY*.12));}
-    const el=renderer.domElement;
-    el.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);
-    el.addEventListener("touchstart",down,{passive:true});el.addEventListener("touchmove",(e)=>{move(e);tmove(e);},{passive:false});
-    el.addEventListener("touchend",(e)=>{up(e);tend(e);});el.addEventListener("wheel",wheel,{passive:false});
+    // The design's two coloured point lights for rim glow.
+    const scene=Graph.scene();
+    const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
+    const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
+    Graph.cameraPosition({z:210});
 
+    // Obsidian-style auto-spin until the user grabs the graph or selects a node.
+    const controls=Graph.controls();
+    controls.autoRotate=true; controls.autoRotateSpeed=0.6;
+
+    // Per-frame decoration: glow pulse, badge counts, selection enlarge — driven
+    // by the live (resolve-aware) open-decision count, exactly as in the design.
     let raf, clock=0;
-    function animate(){raf=requestAnimationFrame(animate);clock+=0.05;for(let i=0;i<2;i++)step();
+    function decorate(){
+      raf=requestAnimationFrame(decorate); clock+=0.05;
       const res=resRef.current, md=modeRef.current, sel=selRef.current;
-      NODES.forEach(n=>{const R=refs[n.id];const p=P[n.id];R.ng.position.set(p.x,p.y,p.z);
+      controls.autoRotate = !sel;
+      data.nodes.forEach(n=>{
+        const R=refs[n.id]; if(!R) return;
         const open=(decsByNode[n.id]||[]).filter(d=>!res[d]).length;
         const isSel=sel===n.id; const ts=isSel?1.5:1;
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
-        if(md==="glow"){R.badge.visible=false; R.typeHalo.material.opacity=0.1;
+        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1;
           const pulse=0.12+0.10*Math.sin(clock*1.4);
           R.alertHalo.material.opacity = open>0 ? pulse : 0;
           R.core.material.emissiveIntensity = isSel?1.0:(open>0?0.85:0.5);
@@ -189,18 +200,16 @@ export default function App() {
           if(open>0){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
               b.position.set(R.r*1.1,R.r*1.1,0); R.ng.add(b); R.badge=b; } R.badge.visible=true; }
           else R.badge.visible=false;
-        }});
-      let i=0;LINKS.forEach(l=>{const a=P[l[0]],b=P[l[1]];lp[i++]=a.x;lp[i++]=a.y;lp[i++]=a.z;lp[i++]=b.x;lp[i++]=b.y;lp[i++]=b.z;});
-      lg.attributes.position.needsUpdate=true;
-      if(!dragging&&!sel)rot.y+=0.0022; group.rotation.set(rot.x,rot.y,0);
-      camera.position.z+=(camZ-camera.position.z)*0.15; renderer.render(scene,camera);}
-    animate();
-    function rs(){W=mount.clientWidth;H=mount.clientHeight;if(W===0||H===0)return;camera.aspect=W/H;camera.updateProjectionMatrix();renderer.setSize(W,H);}
-    resizeRef.current=rs;
+        }
+      });
+    }
+    decorate();
+
+    function rs(){const W=mount.clientWidth,H=mount.clientHeight; if(W===0||H===0) return; Graph.width(W).height(H);}
+    rs(); resizeRef.current=rs;
     const ro=new ResizeObserver(()=>rs()); ro.observe(mount);
-    return ()=>{cancelAnimationFrame(raf);ro.disconnect();window.removeEventListener("mousemove",move);
-      window.removeEventListener("mouseup",up);el.removeEventListener("mousedown",down);el.removeEventListener("wheel",wheel);
-      renderer.dispose();if(el.parentNode)el.parentNode.removeChild(el);};
+
+    return ()=>{ cancelAnimationFrame(raf); ro.disconnect(); Graph._destructor(); };
   },[]);
 
   const node=selected?NODES.find(n=>n.id===selected):null;
