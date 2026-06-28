@@ -112,7 +112,7 @@ export default function App() {
   const norm=useMemo(()=>normalize(graph),[graph]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
-  const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null);
+  const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false);
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
@@ -209,6 +209,21 @@ export default function App() {
     showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
   };
 
+  // Link styling helpers — read the live "active" set (selected node + neighbours).
+  const endpointId=(e)=> (typeof e==="object"&&e)?e.id:e;
+  const linkIsActive=(l)=>{ const a=activeRef.current; return a && a.has(endpointId(l.source)) && a.has(endpointId(l.target)); };
+  const linkColorFor=(l)=>{ const a=activeRef.current; if(!a) return "#8B7CFF"; return linkIsActive(l)?"#C9BFFF":"#39406A"; };
+  const linkWidthFor=(l)=>{ const a=activeRef.current; if(!a) return 0.5; return linkIsActive(l)?1.6:0.25; };
+
+  // Recompute the active set on selection/data change and refresh link styling
+  // (re-applying the accessors makes 3d-force-graph re-evaluate every link).
+  useEffect(()=>{
+    let act=null;
+    if(selected){ act=new Set([selected]); norm.links.forEach(([s,t])=>{ if(s===selected)act.add(t); if(t===selected)act.add(s); }); }
+    activeRef.current=act;
+    const G=graphObjRef.current; if(G){ G.linkColor(linkColorFor).linkWidth(linkWidthFor); }
+  },[selected,norm]); // eslint-disable-line
+
   // --- 3D engine: created once; data synced separately when it changes -------
   useEffect(()=>{
     const mount=mountRef.current; if(!mount) return;
@@ -219,7 +234,7 @@ export default function App() {
       const col=COL[node.type] ?? COL.rival;
       const r=4+(node.connections||1)*1.8; const ng=new THREE.Group();
       const core=new THREE.Mesh(new THREE.SphereGeometry(r,20,20),
-        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60}));
+        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60,transparent:true,opacity:1}));
       core.userData={id:node.id,r}; ng.add(core);
       const typeHalo=new THREE.Mesh(new THREE.SphereGeometry(r*1.7,16,16),
         new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
@@ -237,9 +252,11 @@ export default function App() {
       .showNavInfo(false)
       .nodeThreeObject(makeNode)
       .nodeLabel(()=>"")                     // labels are sprites; suppress the hover tooltip
-      .linkColor(()=>"#8B7CFF")
-      .linkOpacity(0.22)
-      .linkWidth(0)
+      // Obsidian-style links: visible by default; on selection, the selected
+      // node's links brighten and thicken while the rest recede.
+      .linkColor(linkColorFor)
+      .linkWidth(linkWidthFor)
+      .linkOpacity(0.6)
       .enableNodeDrag(false)   // match the design: drag rotates the cloud, tap selects a node
       .onNodeClick(n=>setSelected(n.id))
       .onBackgroundClick(()=>setSelected(null));
@@ -266,17 +283,23 @@ export default function App() {
       raf=requestAnimationFrame(decorate); clock+=0.05;
       const res=resRef.current, md=modeRef.current, sel=selRef.current, n0=normRef.current;
       controls.autoRotate = !sel;
+      const act=activeRef.current;   // null = nothing selected; otherwise selected + neighbours
       n0.nodes.forEach(n=>{
         const R=refsRef.current[n.id]; if(!R) return;
         const open=(n0.decsByNode[n.id]||[]).filter(d=>!res[d]).length;
         const isSel=sel===n.id; const ts=isSel?1.5:1;
+        const dim = act && !act.has(n.id);   // a node is dimmed when it's outside the selection's neighbourhood
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
-        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1;
+        // Fade dimmed nodes' bodies and labels; connected nodes stay full-strength.
+        R.core.material.opacity += ((dim?0.18:1) - R.core.material.opacity)*0.2;
+        R.ng.children.forEach(ch=>{ if(ch.isSprite && ch!==R.badge) ch.material.opacity += ((dim?0.12:1) - ch.material.opacity)*0.2; });
+        const lit = dim?0.18:1;
+        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1*lit;
           const pulse=0.12+0.10*Math.sin(clock*1.4);
-          R.alertHalo.material.opacity = open>0 ? pulse : 0;
-          R.core.material.emissiveIntensity = isSel?1.0:(open>0?0.85:0.5);
-        } else { R.alertHalo.material.opacity=0; R.typeHalo.material.opacity=0; R.core.material.emissiveIntensity=isSel?0.9:0.32;
-          if(open>0){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
+          R.alertHalo.material.opacity = (open>0 ? pulse : 0)*lit;
+          R.core.material.emissiveIntensity = (isSel?1.0:(open>0?0.85:0.5))*(dim?0.3:1);
+        } else { R.alertHalo.material.opacity=0; R.typeHalo.material.opacity=0; R.core.material.emissiveIntensity=(isSel?0.9:0.32)*(dim?0.3:1);
+          if(open>0&&!dim){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
               b.position.set(R.r*1.1,R.r*1.1,0); R.ng.add(b); R.badge=b; } R.badge.visible=true; }
           else R.badge.visible=false;
         }
