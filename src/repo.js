@@ -19,6 +19,12 @@ const ls = {
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
+// Generic on-device JSON storage (resolved state, capture log, outbox queue).
+export function lsGetJSON(key, fallback) {
+  try { const r = ls.get(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; }
+}
+export function lsSetJSON(key, val) { ls.set(key, JSON.stringify(val)); }
+
 // --- connection (token + repo address) --------------------------------------
 
 export function loadConn() {
@@ -63,6 +69,13 @@ function b64ToUtf8(b64) {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder("utf-8").decode(bytes);
 }
+// UTF-8 string -> base64 (for writing files back through the Contents API).
+function utf8ToB64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
 
 // Read graph.json from the private brain repo. Returns { graph, sha }.
 export async function fetchGraphJson({ token, owner, repo, branch }) {
@@ -74,6 +87,45 @@ export async function fetchGraphJson({ token, owner, repo, branch }) {
   if (!r.ok) throw new Error(`GitHub error ${r.status}`);
   const j = await r.json();
   return { graph: JSON.parse(b64ToUtf8(j.content)), sha: j.sha };
+}
+
+// --- GitHub write (append-only) ---------------------------------------------
+
+// Read a file's raw text + sha, or null if it doesn't exist yet.
+async function getFileRaw({ token, owner, repo, branch }, path) {
+  const url = `${API}/repos/${owner}/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`;
+  const r = await fetch(url, { headers: ghHeaders(token) });
+  if (r.status === 404) return null;
+  if (r.status === 401) throw new Error("Bad token (401) — needs Contents read/write");
+  if (!r.ok) throw new Error(`GitHub read error ${r.status}`);
+  const j = await r.json();
+  return { text: b64ToUtf8(j.content), sha: j.sha };
+}
+
+// PUT a file (this single call IS a commit). Include sha to update, omit to create.
+async function putFile({ token, owner, repo, branch }, path, text, sha, message) {
+  const url = `${API}/repos/${owner}/${repo}/contents/${path}`;
+  const body = { message, content: utf8ToB64(text), branch };
+  if (sha) body.sha = sha;
+  const r = await fetch(url, {
+    method: "PUT",
+    headers: { ...ghHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (r.status === 401) throw new Error("Bad token (401) — needs Contents write");
+  if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {} throw new Error(`GitHub write error ${r.status}${m ? ": " + m : ""}`); }
+  return r.json();
+}
+
+// Append ONE line to inbox.md (created if missing). Append-only: read current
+// content + sha, add the line, PUT it back. Never edits cards or any other file.
+export async function appendToInbox(conn, line, message = "app: capture") {
+  if (!conn.token) throw new Error("Not connected");
+  const cur = await getFileRaw(conn, "inbox.md");
+  const base = cur ? cur.text : "";
+  const sep = base.length && !base.endsWith("\n") ? "\n" : "";
+  const next = base + sep + line + "\n";
+  await putFile(conn, "inbox.md", next, cur?.sha, message);
 }
 
 // --- normalisation ----------------------------------------------------------

@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
 import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw } from "lucide-react";
-import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, normalize, toEngineData, DEFAULT_CONN } from "./repo.js";
+import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
 // Shown out of the box and whenever no token is connected. Once the user
@@ -94,8 +94,9 @@ export default function App() {
   const [mode,setMode]=useState("glow");          // glow | badge
   const [brainOpen,setBrainOpen]=useState(true);
   const [selected,setSelected]=useState(null);
-  const [resolved,setResolved]=useState({});
-  const [captures,setCaptures]=useState([]);
+  const [resolved,setResolved]=useState(()=>lsGetJSON("sb_res",{}));
+  const [captures,setCaptures]=useState(()=>lsGetJSON("sb_cap",[]));
+  const [outbox,setOutbox]=useState(()=>lsGetJSON("sb_outbox",[]));   // writes not yet pushed
   const [draft,setDraft]=useState("");
   const [openDec,setOpenDec]=useState(null);
   const [outcome,setOutcome]=useState("");
@@ -112,12 +113,13 @@ export default function App() {
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null);
+  const outboxRef=useRef(outbox), flushing=useRef(false);
 
-  useEffect(()=>{(async()=>{
-    try{const r=await window.storage.get("res_app"); if(r&&r.value) setResolved(JSON.parse(r.value));}catch(e){}
-    try{const c=await window.storage.get("cap_app"); if(c&&c.value) setCaptures(JSON.parse(c.value));}catch(e){}
-  })();},[]);
-  const persist=async(k,v)=>{try{await window.storage.set(k,JSON.stringify(v));}catch(e){}};
+  const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
+  // Update the ref synchronously so flushOutbox(), called right after, sees the
+  // fresh queue (the [outbox] effect below only runs after the next render).
+  const setOutboxP=(arr)=>{ outboxRef.current=arr; setOutbox(arr); lsSetJSON("sb_outbox",arr); };
+  useEffect(()=>{outboxRef.current=outbox;},[outbox]);
   useEffect(()=>{selRef.current=selected;},[selected]);
   useEffect(()=>{modeRef.current=mode;},[mode]);
   useEffect(()=>{resRef.current=resolved;},[resolved]);
@@ -138,6 +140,29 @@ export default function App() {
   // On launch: if connected, refresh in the background (the mirror already shows instantly).
   useEffect(()=>{ if(conn.token) refresh(conn); },[]); // eslint-disable-line
 
+  // Outbox: append queued writes to inbox.md one-by-one, in order. A write that
+  // fails (e.g. no signal) stays queued and is retried later — a thought is
+  // never lost. Sequential, because each append reads-then-writes the file.
+  async function flushOutbox(c=conn){
+    if(flushing.current || !c.token || !navigator.onLine) return;
+    flushing.current=true;
+    try{
+      // Re-read the live queue each pass so items enqueued mid-flush are caught.
+      while(outboxRef.current.length){
+        const item=outboxRef.current[0];
+        try{ await appendToInbox(c, item.line, item.message); setOutboxP(outboxRef.current.slice(1)); }
+        catch(e){ break; }   // stop at the first failure; keep the rest for next time
+      }
+    } finally { flushing.current=false; }
+  }
+  // Flush on launch and whenever the device comes back online.
+  useEffect(()=>{
+    const onOnline=()=>flushOutbox();
+    window.addEventListener("online",onOnline);
+    flushOutbox();
+    return ()=>window.removeEventListener("online",onOnline);
+  },[conn.token]); // eslint-disable-line
+
   function openSettings(){ setForm({ token:conn.token, owner:conn.owner, repo:conn.repo, branch:conn.branch }); setShowSettings(true); }
   function saveSettings(){
     const c={ token:(form.token||"").trim(), owner:(form.owner||"").trim()||DEFAULT_CONN.owner, repo:(form.repo||"").trim()||DEFAULT_CONN.repo, branch:(form.branch||"").trim()||DEFAULT_CONN.branch };
@@ -155,12 +180,34 @@ export default function App() {
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
-  const resolve=(id)=>{const next={...resolved,[id]:{ts:Date.now(),outcome:outcome.trim()}};
-    setResolved(next);persist("res_app",next);setOpenDec(null);setOutcome("");
-    showToast("Resolved + 30",()=>{const r={...next};delete r[id];setResolved(r);persist("res_app",r);setToast(null);});};
-  const reopen=(id)=>{const r={...resolved};delete r[id];setResolved(r);persist("res_app",r);};
-  const capture=()=>{const t=draft.trim();if(!t)return;const next=[{t,ts:Date.now()},...captures];
-    setCaptures(next);persist("cap_app",next);setDraft("");showToast("Captured to inbox");};
+  const today=()=>new Date().toISOString().slice(0,10);
+  const enqueue=(item)=>{ const q=[...outboxRef.current,item]; setOutboxP(q); flushOutbox(); };
+
+  // Resolve a decision: instant local glow/badge drop, then append a structured
+  // resolved: line to inbox.md. The real card rewrite happens later in processing.
+  const resolve=(id)=>{
+    const d=norm.dec[id]; const oc=outcome.trim();
+    const next={...resolved,[id]:{ts:Date.now(),outcome:oc}};
+    setResolved(next);persist("sb_res",next);setOpenDec(null);setOutcome("");
+    const item={id:"r_"+id, kind:"resolved", ts:Date.now(), message:"app: resolve decision",
+      line:`resolved: [[${d?.node}]] | "${d?.text}" → ${oc||"resolved"} | ${today()}`};
+    if(conn.token) enqueue(item);
+    showToast(conn.token?"Resolved + 30":"Resolved + 30 (demo)",()=>{
+      const r={...next};delete r[id];setResolved(r);persist("sb_res",r);
+      setOutboxP(outboxRef.current.filter(x=>x.id!==item.id));   // pull the line back if not yet sent
+      setToast(null);});
+  };
+  const reopen=(id)=>{const r={...resolved};delete r[id];setResolved(r);persist("sb_res",r);};
+
+  // Capture a thought: optimistic local add, then append the raw line to inbox.md.
+  const capture=()=>{
+    const t=draft.trim();if(!t)return;
+    const next=[{t,ts:Date.now()},...captures];
+    setCaptures(next);persist("sb_cap",next);setDraft("");
+    if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
+    enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
+    showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
+  };
 
   // --- 3D engine: created once; data synced separately when it changes -------
   useEffect(()=>{
@@ -336,7 +383,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span></span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{outbox.length>0&&<span style={{color:"#F5B344"}}> · {outbox.length} queued</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>
