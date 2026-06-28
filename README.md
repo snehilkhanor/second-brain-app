@@ -33,13 +33,26 @@ npm run preview # preview the built site locally
 
 This app is being built in steps (see the build brief, section 9):
 
-1. **Project foundation + design saved as source** ✅ *(this commit)*
-2. PWA shell that renders the brain + dashboard (graph engine swapped to the
-   [`3d-force-graph`](https://github.com/vasturiano/3d-force-graph) library)
-3. Wire GitHub API **read** (token entry + fetch `graph.json`)
-4. Wire **append-only writes** + instant local glow/badge feedback
-5. Deploy to GitHub Pages + install on phone
-6. The "process the inbox" routine (lives in the private brain repo)
+1. **Project foundation + design saved as source** ✅
+2. **Graph engine swapped to [`3d-force-graph`](https://github.com/vasturiano/3d-force-graph)** ✅
+3. **GitHub API read** (token entry + fetch `graph.json`) ✅
+4. **Append-only writes** + instant local glow/badge feedback + offline outbox ✅
+5. **Installable PWA + deploy to GitHub Pages** ✅
+6. The "process the inbox" routine (lives in the private brain repo) — next
+
+## Deploy (GitHub Pages)
+
+A GitHub Action (`.github/workflows/deploy.yml`) builds and publishes the site
+automatically. One-time setup after merging this branch to `main`:
+
+1. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. That's it. Every push to `main` now builds and deploys automatically.
+3. When the first run finishes (**Actions** tab → green check), the app is live at
+   `https://<your-username>.github.io/second-brain-app/`.
+4. On your phone: open that URL → browser menu → **Add to Home Screen**.
+
+The public URL never exposes your brain: data lives in the private brain repo,
+reached only via the token you enter on the device.
 
 ## Project layout
 

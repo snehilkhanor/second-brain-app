@@ -1,7 +1,12 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2 } from "lucide-react";
+import ForceGraph3D from "3d-force-graph";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw } from "lucide-react";
+import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
+// --- sample data (the design's demo brain) ----------------------------------
+// Shown out of the box and whenever no token is connected. Once the user
+// connects, the real graph.json from the private brain repo replaces it.
 const NODES = [
   { id:"madlabs", label:"Mad Labs", kind:"hub" },
   { id:"trulymadly", label:"TrulyMadly", kind:"venture" },
@@ -52,8 +57,20 @@ const DEC = {
 };
 const COL = { hub:0xF5B344, venture:0x8B7CFF, person:0x5BD6A8, org:0x5BD6A8, rival:0x6B7494 };
 const HEX = { hub:"#F5B344", venture:"#8B7CFF", person:"#5BD6A8", org:"#5BD6A8", rival:"#6B7494" };
-const NAME = Object.fromEntries(NODES.map(n=>[n.id,n.label]));
-const decsByNode = {}; Object.entries(DEC).forEach(([id,v])=>{ (decsByNode[v.node]=decsByNode[v.node]||[]).push(id); });
+
+// The sample brain compiled into the brief's graph.json shape (same shape the
+// real repo serves), so demo and live data flow through identical code paths.
+const SAMPLE_GRAPH = (() => {
+  const deg = {};
+  LINKS.forEach(([s,t])=>{ deg[s]=(deg[s]||0)+1; deg[t]=(deg[t]||0)+1; });
+  const openByNode = {};
+  Object.values(DEC).forEach(d=>{ openByNode[d.node]=(openByNode[d.node]||0)+1; });
+  return {
+    nodes: NODES.map(n=>({ id:n.id, label:n.label, type:n.kind, summary:SUMMARY[n.id]||"", connections:deg[n.id]||0, open_decisions:openByNode[n.id]||0 })),
+    links: LINKS.map(([source,target,label])=>({ source, target, label })),
+    open_decisions: Object.entries(DEC).map(([id,d])=>({ id, card:d.node, text:d.text, flagged:!!d.flagged })),
+  };
+})();
 
 function textSprite(text, color, bold) {
   const c=document.createElement("canvas"); const x=c.getContext("2d"); const f=26;
@@ -77,111 +94,184 @@ export default function App() {
   const [mode,setMode]=useState("glow");          // glow | badge
   const [brainOpen,setBrainOpen]=useState(true);
   const [selected,setSelected]=useState(null);
-  const [resolved,setResolved]=useState({});
-  const [captures,setCaptures]=useState([]);
+  const [resolved,setResolved]=useState(()=>lsGetJSON("sb_res",{}));
+  const [captures,setCaptures]=useState(()=>lsGetJSON("sb_cap",[]));
+  const [outbox,setOutbox]=useState(()=>lsGetJSON("sb_outbox",[]));   // writes not yet pushed
   const [draft,setDraft]=useState("");
   const [openDec,setOpenDec]=useState(null);
   const [outcome,setOutcome]=useState("");
   const [toast,setToast]=useState(null);
-  const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
 
-  useEffect(()=>{(async()=>{
-    try{const r=await window.storage.get("res_app"); if(r&&r.value) setResolved(JSON.parse(r.value));}catch(e){}
-    try{const c=await window.storage.get("cap_app"); if(c&&c.value) setCaptures(JSON.parse(c.value));}catch(e){}
-  })();},[]);
-  const persist=async(k,v)=>{try{await window.storage.set(k,JSON.stringify(v));}catch(e){}};
+  // --- repo connection + graph data ----------------------------------------
+  const [conn,setConn]=useState(loadConn);                       // { token, owner, repo, branch }
+  const [graph,setGraph]=useState(()=> loadMirror() || SAMPLE_GRAPH);
+  const [status,setStatus]=useState(()=> loadConn().token ? {state:"idle"} : {state:"demo"});
+  const [showSettings,setShowSettings]=useState(false);
+  const [form,setForm]=useState(null);                           // settings-sheet draft
+
+  const norm=useMemo(()=>normalize(graph),[graph]);
+
+  const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
+  const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null);
+  const outboxRef=useRef(outbox), flushing=useRef(false);
+
+  const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
+  // Update the ref synchronously so flushOutbox(), called right after, sees the
+  // fresh queue (the [outbox] effect below only runs after the next render).
+  const setOutboxP=(arr)=>{ outboxRef.current=arr; setOutbox(arr); lsSetJSON("sb_outbox",arr); };
+  useEffect(()=>{outboxRef.current=outbox;},[outbox]);
   useEffect(()=>{selRef.current=selected;},[selected]);
   useEffect(()=>{modeRef.current=mode;},[mode]);
   useEffect(()=>{resRef.current=resolved;},[resolved]);
   useEffect(()=>{ const t=setTimeout(()=>resizeRef.current&&resizeRef.current(),70); return ()=>clearTimeout(t); },[brainOpen]);
 
+  // Read the brain repo: pull fresh graph.json, render it, refresh the mirror.
+  async function refresh(c=conn){
+    if(!c.token){ setStatus({state:"demo"}); return; }
+    setStatus({state:"loading"});
+    try{
+      const { graph:g } = await fetchGraphJson(c);
+      setGraph(g); saveMirror(g);
+      setStatus({state:"ok", at:Date.now()});
+    }catch(e){
+      setStatus({state:"error", msg:e.message||String(e)});
+    }
+  }
+  // On launch: if connected, refresh in the background (the mirror already shows instantly).
+  useEffect(()=>{ if(conn.token) refresh(conn); },[]); // eslint-disable-line
+
+  // Outbox: append queued writes to inbox.md one-by-one, in order. A write that
+  // fails (e.g. no signal) stays queued and is retried later — a thought is
+  // never lost. Sequential, because each append reads-then-writes the file.
+  async function flushOutbox(c=conn){
+    if(flushing.current || !c.token || !navigator.onLine) return;
+    flushing.current=true;
+    try{
+      // Re-read the live queue each pass so items enqueued mid-flush are caught.
+      while(outboxRef.current.length){
+        const item=outboxRef.current[0];
+        try{ await appendToInbox(c, item.line, item.message); setOutboxP(outboxRef.current.slice(1)); }
+        catch(e){ break; }   // stop at the first failure; keep the rest for next time
+      }
+    } finally { flushing.current=false; }
+  }
+  // Flush on launch and whenever the device comes back online.
+  useEffect(()=>{
+    const onOnline=()=>flushOutbox();
+    window.addEventListener("online",onOnline);
+    flushOutbox();
+    return ()=>window.removeEventListener("online",onOnline);
+  },[conn.token]); // eslint-disable-line
+
+  function openSettings(){ setForm({ token:conn.token, owner:conn.owner, repo:conn.repo, branch:conn.branch }); setShowSettings(true); }
+  function saveSettings(){
+    const c={ token:(form.token||"").trim(), owner:(form.owner||"").trim()||DEFAULT_CONN.owner, repo:(form.repo||"").trim()||DEFAULT_CONN.repo, branch:(form.branch||"").trim()||DEFAULT_CONN.branch };
+    saveConn(c); setConn(c); setShowSettings(false); refresh(c);
+  }
+  function doDisconnect(){
+    repoDisconnect();
+    const c={ ...conn, token:"" }; setConn(c);
+    setGraph(SAMPLE_GRAPH); setStatus({state:"demo"}); setShowSettings(false);
+  }
+
   const resolvedCount=Object.keys(resolved).length, captureCount=captures.length;
-  const openCountTotal=Object.keys(DEC).length-resolvedCount;
-  const momentum=NODES.length*2+LINKS.length*3+resolvedCount*30+captureCount*4;
+  const openCountTotal=Object.keys(norm.dec).length-resolvedCount;
+  const momentum=norm.nodes.length*2+norm.links.length*3+resolvedCount*30+captureCount*4;
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
-  const resolve=(id)=>{const next={...resolved,[id]:{ts:Date.now(),outcome:outcome.trim()}};
-    setResolved(next);persist("res_app",next);setOpenDec(null);setOutcome("");
-    showToast("Resolved + 30",()=>{const r={...next};delete r[id];setResolved(r);persist("res_app",r);setToast(null);});};
-  const reopen=(id)=>{const r={...resolved};delete r[id];setResolved(r);persist("res_app",r);};
-  const capture=()=>{const t=draft.trim();if(!t)return;const next=[{t,ts:Date.now()},...captures];
-    setCaptures(next);persist("cap_app",next);setDraft("");showToast("Captured to inbox");};
+  const today=()=>new Date().toISOString().slice(0,10);
+  const enqueue=(item)=>{ const q=[...outboxRef.current,item]; setOutboxP(q); flushOutbox(); };
 
+  // Resolve a decision: instant local glow/badge drop, then append a structured
+  // resolved: line to inbox.md. The real card rewrite happens later in processing.
+  const resolve=(id)=>{
+    const d=norm.dec[id]; const oc=outcome.trim();
+    const next={...resolved,[id]:{ts:Date.now(),outcome:oc}};
+    setResolved(next);persist("sb_res",next);setOpenDec(null);setOutcome("");
+    const item={id:"r_"+id, kind:"resolved", ts:Date.now(), message:"app: resolve decision",
+      line:`resolved: [[${d?.node}]] | "${d?.text}" → ${oc||"resolved"} | ${today()}`};
+    if(conn.token) enqueue(item);
+    showToast(conn.token?"Resolved + 30":"Resolved + 30 (demo)",()=>{
+      const r={...next};delete r[id];setResolved(r);persist("sb_res",r);
+      setOutboxP(outboxRef.current.filter(x=>x.id!==item.id));   // pull the line back if not yet sent
+      setToast(null);});
+  };
+  const reopen=(id)=>{const r={...resolved};delete r[id];setResolved(r);persist("sb_res",r);};
+
+  // Capture a thought: optimistic local add, then append the raw line to inbox.md.
+  const capture=()=>{
+    const t=draft.trim();if(!t)return;
+    const next=[{t,ts:Date.now()},...captures];
+    setCaptures(next);persist("sb_cap",next);setDraft("");
+    if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
+    enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
+    showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
+  };
+
+  // --- 3D engine: created once; data synced separately when it changes -------
   useEffect(()=>{
     const mount=mountRef.current; if(!mount) return;
-    let W=mount.clientWidth, H=mount.clientHeight;
-    const scene=new THREE.Scene();
-    const camera=new THREE.PerspectiveCamera(60,W/H,0.1,3000); let camZ=210; camera.position.z=camZ;
-    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
-    renderer.setSize(W,H); renderer.setPixelRatio(Math.min(window.devicePixelRatio,2)); mount.appendChild(renderer.domElement);
-    scene.add(new THREE.AmbientLight(0xffffff,0.7));
-    const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
-    const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
-    const group=new THREE.Group(); scene.add(group);
 
-    const deg={}; LINKS.forEach(l=>{deg[l[0]]=(deg[l[0]]||0)+1; deg[l[1]]=(deg[l[1]]||0)+1;});
-    const P={}; NODES.forEach(n=>{P[n.id]={x:(Math.random()-.5)*120,y:(Math.random()-.5)*120,z:(Math.random()-.5)*120,vx:0,vy:0,vz:0};});
-
-    const cores=[]; const refs={};
-    NODES.forEach(n=>{
-      const r=4+(deg[n.id]||1)*1.8; const ng=new THREE.Group();
+    // One node's visual — ported verbatim from the design: glowing core sized by
+    // connections, type-coloured halo, amber alert halo, label sprite, count badge.
+    function makeNode(node){
+      const col=COL[node.type] ?? COL.rival;
+      const r=4+(node.connections||1)*1.8; const ng=new THREE.Group();
       const core=new THREE.Mesh(new THREE.SphereGeometry(r,20,20),
-        new THREE.MeshPhongMaterial({color:COL[n.kind],emissive:COL[n.kind],emissiveIntensity:0.5,shininess:60}));
-      core.userData={id:n.id,r}; ng.add(core);
+        new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60}));
+      core.userData={id:node.id,r}; ng.add(core);
       const typeHalo=new THREE.Mesh(new THREE.SphereGeometry(r*1.7,16,16),
-        new THREE.MeshBasicMaterial({color:COL[n.kind],transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
+        new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.1,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(typeHalo);
       const alertHalo=new THREE.Mesh(new THREE.SphereGeometry(r*2.1,16,16),
         new THREE.MeshBasicMaterial({color:0xF5B344,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(alertHalo);
-      const label=textSprite(n.label,"#AEB7D4",false); label.position.set(0,r+7,0); ng.add(label);
+      const label=textSprite(node.label,"#AEB7D4",false); label.position.set(0,r+7,0); ng.add(label);
       const badge=badgeSprite(0); badge.position.set(r*1.1,r*1.1,0); badge.visible=false; ng.add(badge);
-      group.add(ng); cores.push(core); refs[n.id]={ng,core,typeHalo,alertHalo,badge,r};
-    });
+      refsRef.current[node.id]={ng,core,typeHalo,alertHalo,badge,r};
+      return ng;
+    }
 
-    const lg=new THREE.BufferGeometry(); const lp=new Float32Array(LINKS.length*6);
-    lg.setAttribute("position",new THREE.BufferAttribute(lp,3));
-    group.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x8B7CFF,transparent:true,opacity:0.22})));
+    // The 3d-force-graph engine: it owns physics, camera, orbit drag and pinch-zoom.
+    const Graph=ForceGraph3D({controlType:"orbit"})(mount)
+      .backgroundColor("rgba(0,0,0,0)")     // transparent so the CSS radial gradient shows through
+      .showNavInfo(false)
+      .nodeThreeObject(makeNode)
+      .nodeLabel(()=>"")                     // labels are sprites; suppress the hover tooltip
+      .linkColor(()=>"#8B7CFF")
+      .linkOpacity(0.22)
+      .linkWidth(0)
+      .enableNodeDrag(false)   // match the design: drag rotates the cloud, tap selects a node
+      .onNodeClick(n=>setSelected(n.id))
+      .onBackgroundClick(()=>setSelected(null));
+    graphObjRef.current=Graph;
 
-    function step(){const REST=44,KR=2400,KS=0.05,KC=0.016,DAMP=0.86,DT=0.7;
-      NODES.forEach(a=>{let fx=0,fy=0,fz=0;const pa=P[a.id];
-        NODES.forEach(b=>{if(a.id===b.id)return;const pb=P[b.id];let dx=pa.x-pb.x,dy=pa.y-pb.y,dz=pa.z-pb.z;
-          let d2=dx*dx+dy*dy+dz*dz+.01,d=Math.sqrt(d2);const f=KR/d2;fx+=dx/d*f;fy+=dy/d*f;fz+=dz/d*f;});
-        fx-=pa.x*KC;fy-=pa.y*KC;fz-=pa.z*KC;pa._fx=fx;pa._fy=fy;pa._fz=fz;});
-      LINKS.forEach(l=>{const pa=P[l[0]],pb=P[l[1]];let dx=pb.x-pa.x,dy=pb.y-pa.y,dz=pb.z-pa.z;
-        let d=Math.sqrt(dx*dx+dy*dy+dz*dz)+.01;const f=(d-REST)*KS,ux=dx/d,uy=dy/d,uz=dz/d;
-        pa._fx+=ux*f;pa._fy+=uy*f;pa._fz+=uz*f;pb._fx-=ux*f;pb._fy-=uy*f;pb._fz-=uz*f;});
-      NODES.forEach(n=>{const p=P[n.id];p.vx=(p.vx+p._fx*DT)*DAMP;p.vy=(p.vy+p._fy*DT)*DAMP;p.vz=(p.vz+p._fz*DT)*DAMP;
-        p.x+=p.vx*DT;p.y+=p.vy*DT;p.z+=p.vz*DT;});}
+    // Keep the cloud tight, like the design's hand-tuned springs.
+    Graph.d3Force("charge").strength(-160);
+    Graph.d3Force("link").distance(46);
 
-    const rot={x:-0.2,y:0}; let dragging=false,lastX=0,lastY=0,moved=0,downT=0;
-    const ray=new THREE.Raycaster(); const ndc=new THREE.Vector2();
-    function down(e){dragging=true;moved=0;downT=Date.now();const t=e.touches?e.touches[0]:e;lastX=t.clientX;lastY=t.clientY;}
-    function move(e){if(!dragging)return;const t=e.touches?e.touches[0]:e;const dx=t.clientX-lastX,dy=t.clientY-lastY;
-      lastX=t.clientX;lastY=t.clientY;rot.y+=dx*.006;rot.x+=dy*.006;rot.x=Math.max(-1.3,Math.min(1.3,rot.x));moved+=Math.abs(dx)+Math.abs(dy);}
-    function up(e){const dt=Date.now()-downT;dragging=false;
-      if(moved<7&&dt<350){const t=e.changedTouches?e.changedTouches[0]:e;const rect=renderer.domElement.getBoundingClientRect();
-        ndc.x=((t.clientX-rect.left)/rect.width)*2-1;ndc.y=-((t.clientY-rect.top)/rect.height)*2+1;
-        scene.updateMatrixWorld(true);ray.setFromCamera(ndc,camera);const hits=ray.intersectObjects(cores,false);
-        if(hits.length)setSelected(hits[0].object.userData.id);else setSelected(null);}}
-    let pinch=0,pz=camZ;
-    function tmove(e){if(e.touches&&e.touches.length===2){e.preventDefault();
-      const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-      if(!pinch){pinch=d;pz=camZ;}else camZ=Math.max(110,Math.min(520,pz*(pinch/d)));}}
-    function tend(){pinch=0;}
-    function wheel(e){e.preventDefault();camZ=Math.max(110,Math.min(520,camZ+e.deltaY*.12));}
-    const el=renderer.domElement;
-    el.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);
-    el.addEventListener("touchstart",down,{passive:true});el.addEventListener("touchmove",(e)=>{move(e);tmove(e);},{passive:false});
-    el.addEventListener("touchend",(e)=>{up(e);tend(e);});el.addEventListener("wheel",wheel,{passive:false});
+    // The design's two coloured point lights for rim glow.
+    const scene=Graph.scene();
+    const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
+    const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
+    Graph.cameraPosition({z:210});
 
+    // Obsidian-style auto-spin until the user grabs the graph or selects a node.
+    const controls=Graph.controls();
+    controls.autoRotate=true; controls.autoRotateSpeed=0.6;
+
+    // Per-frame decoration: glow pulse, badge counts, selection enlarge — driven
+    // by the live (resolve-aware) open-decision count, exactly as in the design.
     let raf, clock=0;
-    function animate(){raf=requestAnimationFrame(animate);clock+=0.05;for(let i=0;i<2;i++)step();
-      const res=resRef.current, md=modeRef.current, sel=selRef.current;
-      NODES.forEach(n=>{const R=refs[n.id];const p=P[n.id];R.ng.position.set(p.x,p.y,p.z);
-        const open=(decsByNode[n.id]||[]).filter(d=>!res[d]).length;
+    function decorate(){
+      raf=requestAnimationFrame(decorate); clock+=0.05;
+      const res=resRef.current, md=modeRef.current, sel=selRef.current, n0=normRef.current;
+      controls.autoRotate = !sel;
+      n0.nodes.forEach(n=>{
+        const R=refsRef.current[n.id]; if(!R) return;
+        const open=(n0.decsByNode[n.id]||[]).filter(d=>!res[d]).length;
         const isSel=sel===n.id; const ts=isSel?1.5:1;
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
-        if(md==="glow"){R.badge.visible=false; R.typeHalo.material.opacity=0.1;
+        if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1;
           const pulse=0.12+0.10*Math.sin(clock*1.4);
           R.alertHalo.material.opacity = open>0 ? pulse : 0;
           R.core.material.emissiveIntensity = isSel?1.0:(open>0?0.85:0.5);
@@ -189,24 +279,37 @@ export default function App() {
           if(open>0){ if(R.badge.userData.count!==open){ R.ng.remove(R.badge); const b=badgeSprite(open);
               b.position.set(R.r*1.1,R.r*1.1,0); R.ng.add(b); R.badge=b; } R.badge.visible=true; }
           else R.badge.visible=false;
-        }});
-      let i=0;LINKS.forEach(l=>{const a=P[l[0]],b=P[l[1]];lp[i++]=a.x;lp[i++]=a.y;lp[i++]=a.z;lp[i++]=b.x;lp[i++]=b.y;lp[i++]=b.z;});
-      lg.attributes.position.needsUpdate=true;
-      if(!dragging&&!sel)rot.y+=0.0022; group.rotation.set(rot.x,rot.y,0);
-      camera.position.z+=(camZ-camera.position.z)*0.15; renderer.render(scene,camera);}
-    animate();
-    function rs(){W=mount.clientWidth;H=mount.clientHeight;if(W===0||H===0)return;camera.aspect=W/H;camera.updateProjectionMatrix();renderer.setSize(W,H);}
-    resizeRef.current=rs;
+        }
+      });
+    }
+    decorate();
+
+    function rs(){const W=mount.clientWidth,H=mount.clientHeight; if(W===0||H===0) return; Graph.width(W).height(H);}
+    rs(); resizeRef.current=rs;
     const ro=new ResizeObserver(()=>rs()); ro.observe(mount);
-    return ()=>{cancelAnimationFrame(raf);ro.disconnect();window.removeEventListener("mousemove",move);
-      window.removeEventListener("mouseup",up);el.removeEventListener("mousedown",down);el.removeEventListener("wheel",wheel);
-      renderer.dispose();if(el.parentNode)el.parentNode.removeChild(el);};
+
+    return ()=>{ cancelAnimationFrame(raf); ro.disconnect(); Graph._destructor(); graphObjRef.current=null; };
   },[]);
 
-  const node=selected?NODES.find(n=>n.id===selected):null;
-  const neighbors=selected?LINKS.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:NAME[o]};}):[];
-  const nodeDecs=selected?(decsByNode[selected]||[]).map(id=>({id,...DEC[id]})):[];
-  const allDecs=Object.entries(DEC).map(([id,v])=>({id,...v})).sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
+  // Push the current (demo or live) graph into the engine whenever it changes.
+  useEffect(()=>{
+    normRef.current=norm;
+    const Graph=graphObjRef.current; if(!Graph) return;
+    refsRef.current={};                         // drop stale node objects; makeNode repopulates
+    Graph.graphData(toEngineData(norm));
+  },[norm]);
+
+  const node=selected?norm.nodes.find(n=>n.id===selected):null;
+  const neighbors=selected?norm.links.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:norm.name[o]};}):[];
+  const nodeDecs=selected?(norm.decsByNode[selected]||[]).map(id=>({id,...norm.dec[id]})):[];
+  const allDecs=Object.entries(norm.dec).map(([id,v])=>({id,...v})).sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
+
+  // connection status pill (header button)
+  const st=status.state;
+  const statusUI = st==="ok"   ? {icon:<Cloud size={16}/>, color:"#5BD6A8", label:"synced"}
+                 : st==="loading"?{icon:<RefreshCw size={16} className="spin"/>, color:"#8B7CFF", label:"syncing"}
+                 : st==="error"  ?{icon:<AlertTriangle size={16}/>, color:"#F5B344", label:"error"}
+                 :                {icon:<CloudOff size={16}/>, color:"#6B7494", label:"demo"};
 
   const css=`
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
@@ -225,13 +328,17 @@ export default function App() {
   .seg{display:flex;background:#0E1424;border:1px solid #2A3556;border-radius:99px;padding:3px}
   .seg button{background:transparent;border:none;color:#8A94B0;font-size:11px;padding:5px 12px;border-radius:99px;font-weight:600;cursor:pointer}
   .seg button.on{background:#8B7CFF;color:#0E1424}
+  .conn{display:flex;align-items:center;gap:5px;background:#0E1424;border:1px solid #2A3556;border-radius:99px;padding:6px 11px;cursor:pointer;font-size:11px;font-weight:600}
   .dash{flex:1;overflow-y:auto;padding:14px 16px 20px}
   .dash.hidden{display:none}
   .capbar{flex-shrink:0;display:flex;gap:8;padding:10px 16px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:#0E1424;border-top:1px solid #232C46}
   .card{background:#161E33;border:1px solid #232C46;border-radius:16px;margin-bottom:13px}
   .tap{transition:all .15s;cursor:pointer}.tap:active{transform:scale(.97)}
-  .sheet{position:absolute;left:0;right:0;bottom:0;background:#141B30;border-top:1px solid #2A3556;border-radius:20px 20px 0 0;padding:18px 18px 26px;box-shadow:0 -10px 40px rgba(0,0,0,.55);animation:up .26s cubic-bezier(.2,.8,.2,1);max-height:78%;overflow-y:auto;z-index:8}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:#141B30;border-top:1px solid #2A3556;border-radius:20px 20px 0 0;padding:18px 18px 26px;box-shadow:0 -10px 40px rgba(0,0,0,.55);animation:up .26s cubic-bezier(.2,.8,.2,1);max-height:82%;overflow-y:auto;z-index:8}
   @keyframes up{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  @keyframes spin{to{transform:rotate(360deg)}} .spin{animation:spin 1s linear infinite}
+  .fld{width:100%;background:#0E1424;border:1px solid #232C46;border-radius:10px;color:#E8ECF7;padding:11px 12px;font-size:13px;outline:none;font-family:'JetBrains Mono',monospace}
+  .lbl{font-size:10px;color:#8A94B0;letter-spacing:.08em;margin:12px 0 5px;text-transform:uppercase}
   .chip{font-size:10px;padding:2px 8px;border-radius:99px;font-weight:700}
   .exp{animation:fade .2s}@keyframes fade{from{opacity:0}to{opacity:1}}
   .toast{animation:rise .25s}@keyframes rise{from{transform:translate(-50%,12px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
@@ -248,7 +355,7 @@ export default function App() {
             <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
               {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
             </div>
-            <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{NAME[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
+            <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{norm.name[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
           </div>
           {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
         </div>
@@ -266,14 +373,17 @@ export default function App() {
       <style>{css}</style>
       <div className="hd">
         <div style={{display:"flex",alignItems:"center",gap:8}}><Brain size={20} color="#8B7CFF"/><span className="disp" style={{fontWeight:700,fontSize:17}}>second brain</span></div>
-        <div className="seg">
-          <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")}>Glow</button>
-          <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")}>Badge</button>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
+          <div className="seg">
+            <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")}>Glow</button>
+            <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")}>Badge</button>
+          </div>
         </div>
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {NODES.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span></span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{outbox.length>0&&<span style={{color:"#F5B344"}}> · {outbox.length} queued</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>
@@ -281,8 +391,8 @@ export default function App() {
 
       <div className={"brain"+(brainOpen?"":" hidden")}>
         <div className="legend">
-          <div className="row"><GitBranch size={13}/> {NODES.length}</div>
-          <div className="row"><Link2 size={13}/> {LINKS.length}</div>
+          <div className="row"><GitBranch size={13}/> {norm.nodes.length}</div>
+          <div className="row"><Link2 size={13}/> {norm.links.length}</div>
           <div className="key">
             <span><span className="dot" style={{background:"#F5B344"}}/>hub</span>
             <span><span className="dot" style={{background:"#8B7CFF"}}/>venture</span>
@@ -321,7 +431,7 @@ export default function App() {
           <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
           {allDecs.map(d=><DecRow key={d.id} d={d} compact/>)}
         </div>
-        <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the app db · plain-text backups</div>
+        <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
 
       <div className="capbar">
@@ -332,15 +442,44 @@ export default function App() {
       {node&&(
         <div className="sheet">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:9}}><span style={{width:12,height:12,borderRadius:"50%",background:HEX[node.kind],boxShadow:`0 0 10px ${HEX[node.kind]}`}}/><span className="disp" style={{fontSize:20,fontWeight:700}}>{node.label}</span><span className="chip" style={{background:HEX[node.kind]+"22",color:HEX[node.kind]}}>{node.kind}</span></div>
+            <div style={{display:"flex",alignItems:"center",gap:9}}><span style={{width:12,height:12,borderRadius:"50%",background:HEX[node.kind]??"#6B7494",boxShadow:`0 0 10px ${HEX[node.kind]??"#6B7494"}`}}/><span className="disp" style={{fontSize:20,fontWeight:700}}>{node.label}</span><span className="chip" style={{background:(HEX[node.kind]??"#6B7494")+"22",color:HEX[node.kind]??"#6B7494"}}>{node.kind}</span></div>
             <button onClick={()=>{setSelected(null);setOpenDec(null);}} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
-          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{SUMMARY[node.id]}</div>
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{norm.summary[node.id]||<span style={{color:"#6B7494"}}>No summary yet — it'll appear after the next processing run.</span>}</div>
           <div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:8}}>CONNECTIONS ({neighbors.length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
           {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact/>)}</>)}
+        </div>
+      )}
+
+      {showSettings&&form&&(
+        <div className="sheet" style={{zIndex:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+            <span className="disp" style={{fontSize:18,fontWeight:700}}>Connect your brain</span>
+            <button onClick={()=>setShowSettings(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
+          </div>
+          <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:6}}>
+            Paste a GitHub <b style={{color:"#C3CAE0"}}>fine-grained token</b> scoped to your private brain repo with <b style={{color:"#C3CAE0"}}>Contents: Read and write</b>. It is stored only on this device and never leaves it except to call GitHub.
+          </div>
+          <div className="lbl">GitHub token</div>
+          <input className="fld" type="password" autoComplete="off" autoCorrect="off" spellCheck={false} value={form.token} onChange={e=>setForm(f=>({...f,token:e.target.value}))} placeholder="github_pat_…"/>
+          <div style={{display:"flex",gap:10}}>
+            <div style={{flex:1}}><div className="lbl">Owner</div><input className="fld" value={form.owner} onChange={e=>setForm(f=>({...f,owner:e.target.value}))} placeholder={DEFAULT_CONN.owner}/></div>
+            <div style={{flex:1}}><div className="lbl">Repo</div><input className="fld" value={form.repo} onChange={e=>setForm(f=>({...f,repo:e.target.value}))} placeholder={DEFAULT_CONN.repo}/></div>
+          </div>
+          <div className="lbl">Branch</div>
+          <input className="fld" value={form.branch} onChange={e=>setForm(f=>({...f,branch:e.target.value}))} placeholder={DEFAULT_CONN.branch}/>
+
+          {status.state==="error"&&<div style={{marginTop:12,fontSize:12,color:"#F5B344",display:"flex",gap:6,alignItems:"flex-start"}}><AlertTriangle size={14} style={{flexShrink:0,marginTop:1}}/><span>{status.msg}</span></div>}
+          {status.state==="ok"&&<div style={{marginTop:12,fontSize:12,color:"#5BD6A8",display:"flex",gap:6,alignItems:"center"}}><Check size={14}/> Synced from {conn.owner}/{conn.repo}.</div>}
+
+          <div style={{display:"flex",gap:9,marginTop:16}}>
+            <button onClick={saveSettings} className="tap" style={{flex:1,background:"#8B7CFF",color:"#0E1424",border:"none",borderRadius:11,padding:"12px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>{status.state==="loading"?<><RefreshCw size={15} className="spin"/> Connecting…</>:<><Cloud size={15}/> Save & connect</>}</button>
+            {conn.token&&<button onClick={doDisconnect} className="tap" style={{background:"transparent",color:"#8A94B0",border:"1px solid #2A3556",borderRadius:11,padding:"12px 14px",fontWeight:600,fontSize:13}}>Disconnect</button>}
+          </div>
+          <div className="mono" style={{fontSize:9.5,color:"#4F587A",textAlign:"center",marginTop:12}}>token lives in this device's storage · revoke anytime in GitHub settings</div>
         </div>
       )}
 
