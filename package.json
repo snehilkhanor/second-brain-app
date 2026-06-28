@@ -1,0 +1,22 @@
+{
+  "name": "second-brain-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Second Brain PWA — a 3D brain + append-only capture surface. App code only; all data lives in the private brain repo.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.453.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
