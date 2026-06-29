@@ -265,13 +265,35 @@ export default function App() {
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
-  // Enqueue + a short trailing debounce: a burst of actions coalesces into one
-  // flush so same-item actions can collapse and distinct lines can batch, instead
-  // of the first action writing alone. (Launch/online/sync-now/retry flush now.)
+  // Coalesce same-item actions SYNCHRONOUSLY in the queue, so a burst collapses to
+  // its net regardless of flush timing (the queue never holds redundant same-item
+  // actions — fixing the case where human-paced taps each flushed alone):
+  //  - a new convert cancels a pending convert on the same item (pair → net none);
+  //    a pending terminal supersedes it, so the convert is dropped.
+  //  - a new snooze/resolve (terminal) removes any pending action for that item,
+  //    then is added — terminal supersedes earlier converts/snoozes.
+  //  - captures (no target) are always appended.
+  // Then a trailing debounce (reset on each action) keeps a quick-succession burst
+  // queued together before the single batched write. Sync now / retry flush immediately.
   const enqueue=(item)=>{
-    setOutboxP([...outboxRef.current,item]);
+    let q=[...outboxRef.current];
+    if(item.target){
+      if(item.kind==="convert"){
+        const hasTerminal=q.some(x=>x.target===item.target && (x.kind==="resolved"||x.kind==="snooze"));
+        const ci=q.findIndex(x=>x.target===item.target && x.kind==="convert");
+        if(hasTerminal){ /* terminal already pending → drop this convert */ }
+        else if(ci>=0){ q.splice(ci,1); }        // two converts cancel → net no convert line
+        else { q.push(item); }
+      } else {                                    // resolved / snooze (terminal)
+        q=q.filter(x=>x.target!==item.target);    // supersede any pending action on this item
+        q.push(item);
+      }
+    } else {
+      q.push(item);                               // capture
+    }
+    setOutboxP(q);
     if(flushTimer.current) clearTimeout(flushTimer.current);
-    flushTimer.current=setTimeout(()=>{ flushTimer.current=null; flushOutbox(); }, 300);
+    flushTimer.current=setTimeout(()=>{ flushTimer.current=null; flushOutbox(); }, 1200);
   };
 
   // Resolve a decision: instant local glow/badge drop, then append a structured
