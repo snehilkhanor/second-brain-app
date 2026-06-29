@@ -482,6 +482,10 @@ export default function App() {
   // list (e.g. status=Snoozed → counts are of snoozed items only).
   const fCount={all:0,decision:0,task:0};
   Object.keys(norm.dec).forEach(id=>{ if(statusOf(id)!==statusFilter) return; fCount.all++; fCount[effType(id)]++; });
+  // Status-tab counts: cross-filtered by the active TYPE filter, so the two
+  // controls stay mutually consistent (each shows totals for the other's slice).
+  const sCount={open:0,snoozed:0,resolved:0};
+  Object.keys(norm.dec).forEach(id=>{ if(itemFilter!=="all" && effType(id)!==itemFilter) return; sCount[statusOf(id)]++; });
 
   // PROCESS-SAFETY GUARD: only safe to run the inbox processor once everything is
   // synced (else the processor won't see still-queued actions and items can briefly
@@ -525,6 +529,11 @@ export default function App() {
   .seg{display:flex;background:#0E1424;border:1px solid #2A3556;border-radius:99px;padding:3px}
   .seg button{background:transparent;border:none;color:#8A94B0;font-size:11px;padding:5px 12px;border-radius:99px;font-weight:600;cursor:pointer}
   .seg button.on{background:#8B7CFF;color:#0E1424}
+  .tabs{display:flex;gap:22px}
+  .stab{background:transparent;border:none;margin-bottom:-1px;padding:2px 0 7px;font-size:11.5px;font-weight:600;cursor:pointer;color:#5C678C;border-bottom:2px solid transparent;display:flex;align-items:center;gap:5px}
+  .stab.on{color:#E8ECF7;border-bottom-color:#8B7CFF}
+  .stab .n{font-family:'JetBrains Mono',monospace;font-size:10px;color:#46506F}
+  .stab.on .n{color:#8B7CFF}
   .conn{display:flex;align-items:center;gap:5px;background:#0E1424;border:1px solid #2A3556;border-radius:99px;padding:6px 11px;cursor:pointer;font-size:11px;font-weight:600}
   .dash{flex:1;overflow-y:auto;padding:14px 16px 20px}
   .dash.hidden{display:none}
@@ -601,11 +610,11 @@ export default function App() {
         </div>
 
         <div className="card" style={{padding:16}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
-          <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
-            <button className={statusFilter==="open"?"on":""} onClick={()=>{setStatusFilter("open");setOpenDec(null);}}>Open</button>
-            <button className={statusFilter==="snoozed"?"on":""} onClick={()=>{setStatusFilter("snoozed");setOpenDec(null);}}>Snoozed</button>
-            <button className={statusFilter==="resolved"?"on":""} onClick={()=>{setStatusFilter("resolved");setOpenDec(null);}}>Resolved</button>
+          <div style={{marginBottom:10}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span></div>
+          <div className="tabs" style={{marginBottom:12,borderBottom:"1px solid #1B2440"}}>
+            {[["open","Open"],["snoozed","Snoozed"],["resolved","Resolved"]].map(([k,lbl])=>(
+              <button key={k} className={"stab tap"+(statusFilter===k?" on":"")} onClick={()=>{setStatusFilter(k);setOpenDec(null);}}>{lbl}<span className="n">({sCount[k]})</span></button>
+            ))}
           </div>
           <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
             <button className={itemFilter==="all"?"on":""} onClick={()=>setItemFilter("all")}>All {fCount.all}</button>
