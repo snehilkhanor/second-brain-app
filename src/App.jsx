@@ -387,6 +387,9 @@ export default function App() {
     .filter(d=>!isSnoozedFuture(d.id))
     .filter(d=> itemFilter==="all" || effType(d.id)===itemFilter)
     .sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
+  // Counts per filter (the visible, non-snoozed set, split by effective type).
+  const fCount={all:0,decision:0,task:0};
+  Object.keys(norm.dec).forEach(id=>{ if(isSnoozedFuture(id)) return; fCount.all++; fCount[effType(id)]++; });
 
   // connection status pill (header button)
   const st=status.state;
@@ -490,9 +493,9 @@ export default function App() {
         <div className="card" style={{padding:16}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
           <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
-            <button className={itemFilter==="all"?"on":""} onClick={()=>setItemFilter("all")}>All</button>
-            <button className={itemFilter==="decision"?"on":""} onClick={()=>setItemFilter("decision")}>Decisions</button>
-            <button className={itemFilter==="task"?"on":""} onClick={()=>setItemFilter("task")}>Tasks</button>
+            <button className={itemFilter==="all"?"on":""} onClick={()=>setItemFilter("all")}>All {fCount.all}</button>
+            <button className={itemFilter==="decision"?"on":""} onClick={()=>setItemFilter("decision")}>Decisions {fCount.decision}</button>
+            <button className={itemFilter==="task"?"on":""} onClick={()=>setItemFilter("task")}>Tasks {fCount.task}</button>
           </div>
           <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
           {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} itemType={effType(d.id)} nameMap={norm.name}/>)}
@@ -584,7 +587,7 @@ function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome,
         {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
       </div>
 
-      {!isRes&&(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:29,marginTop:7,flexWrap:"wrap"}}>
+      {isOpen&&!isRes&&(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:29,marginTop:9,flexWrap:"wrap"}}>
         <button onClick={(e)=>{e.stopPropagation();onConvert(d.id);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"5px 9px"}}><Repeat size={11}/> to {isTask?"decision":"task"}</button>
         <button onClick={(e)=>{e.stopPropagation();setSnz(s=>!s);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"5px 9px"}}><Clock size={11}/> snooze <ChevronDown size={11} style={{transform:snz?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
         {snz&&(<div className="exp" style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4,width:"100%"}}>
