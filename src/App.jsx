@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
 import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play } from "lucide-react";
-import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxCount, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
+import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxItems, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
 // Shown out of the box and whenever no token is connected. Once the user
@@ -152,7 +152,7 @@ export default function App() {
   const [types,setTypes]=useState(()=>lsGetJSON("sb_types",{}));   // local convert overrides: id -> type
   const [snoozes,setSnoozes]=useState(()=>lsGetJSON("sb_snooze",{})); // local snoozes: id -> until ISO
   const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
-  const [inboxCount,setInboxCount]=useState(()=>lsGetJSON("sb_inbox",0)); // raw items waiting in inbox.md
+  const [inboxItems,setInboxItems]=useState(()=>{ const v=lsGetJSON("sb_inbox",[]); return Array.isArray(v)?v:[]; }); // raw waiting lines from inbox.md
   const [showProcess,setShowProcess]=useState(false);            // inbox/process sheet
 
   const norm=useMemo(()=>normalize(graph),[graph]);
@@ -187,8 +187,8 @@ export default function App() {
   // Pull the live inbox.md waiting-count and mirror it for instant/offline load.
   // Demo / disconnected → 0. Errors are swallowed (keep the last mirrored value).
   async function refreshInbox(c=conn){
-    if(!c.token){ setInboxCount(0); lsSetJSON("sb_inbox",0); return; }
-    try{ const n=await fetchInboxCount(c); setInboxCount(n); lsSetJSON("sb_inbox",n); }catch{}
+    if(!c.token){ setInboxItems([]); lsSetJSON("sb_inbox",[]); return; }
+    try{ const items=await fetchInboxItems(c); setInboxItems(items); lsSetJSON("sb_inbox",items); }catch{}
   }
   // On launch: if connected, refresh graph + inbox count in the background
   // (the mirrors already show instantly).
@@ -245,7 +245,7 @@ export default function App() {
     repoDisconnect();
     const c={ ...conn, token:"" }; setConn(c);
     setGraph(SAMPLE_GRAPH); setStatus({state:"demo"}); setShowSettings(false);
-    setInboxCount(0); lsSetJSON("sb_inbox",0);
+    setInboxItems([]); lsSetJSON("sb_inbox",[]);
   }
 
   const today=()=>new Date().toISOString().slice(0,10);
@@ -263,6 +263,10 @@ export default function App() {
 
   const resolvedCount=Object.keys(resolved).length, captureCount=captures.length;
   const openCountTotal=Object.keys(norm.dec).filter(isActiveOpen).length;
+  // Inbox preview: real waiting lines from inbox.md when connected; in demo there's
+  // no remote inbox, so show the local captured thoughts (newest last, file order).
+  const inboxList = conn.token ? inboxItems : captures.map(c=>c.t).slice().reverse();
+  const inboxCount = inboxList.length;
 
   // Per-node count of active-open items (drives glow/badge); snooze-aware.
   const openCountByNode=useMemo(()=>{
@@ -333,7 +337,7 @@ export default function App() {
     setCaptures(next);persist("sb_cap",next);setDraft("");
     if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
     enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
-    setInboxCount(n=>{ const v=n+1; lsSetJSON("sb_inbox",v); return v; });   // optimistic +1 (a refetch would lag the write)
+    setInboxItems(prev=>{ const v=[...prev,t]; lsSetJSON("sb_inbox",v); return v; });   // optimistic append (a refetch would lag the write)
     showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
   };
 
@@ -679,9 +683,16 @@ export default function App() {
             <span className="disp" style={{fontSize:18,fontWeight:700,display:"flex",alignItems:"center",gap:8}}><Inbox size={18} color="#F5B344"/> Inbox</span>
             <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
-          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:4}}>
-            <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting.
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:8}}>
+            <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
           </div>
+          {inboxCount>0
+            ? <div style={{maxHeight:230,overflowY:"auto",background:"#0E1424",border:"1px solid #232C46",borderRadius:12,marginBottom:14}}>
+                {inboxList.map((line,i)=>(
+                  <div key={i} className="mono" style={{fontSize:11.5,color:"#C3CAE0",lineHeight:1.5,padding:"8px 12px",borderBottom:i<inboxCount-1?"1px solid #1B2440":"none",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{line}</div>
+                ))}
+              </div>
+            : <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0 14px"}}>Nothing waiting right now.</div>}
           <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:16}}>
             {conn.token
               ? "Processing reads inbox.md, folds these into your cards, and clears the inbox. It runs in your brain processor — this just asks it to."

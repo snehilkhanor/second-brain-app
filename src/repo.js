@@ -162,13 +162,14 @@ export async function appendToInbox(conn, lines, message = "app: write") {
   }
 }
 
-// Count "waiting" items in inbox.md: non-empty lines that are NOT markdown
-// headings (don't start with "#"). Returns 0 if the file doesn't exist yet.
-export async function fetchInboxCount(conn) {
-  if (!conn.token) return 0;
+// The "waiting" items in inbox.md, in file order: non-empty lines that are NOT
+// markdown headings (don't start with "#"). Empty array if the file doesn't
+// exist yet. The count is just this array's length.
+export async function fetchInboxItems(conn) {
+  if (!conn.token) return [];
   const cur = await getFileRaw(conn, "inbox.md");
-  if (!cur) return 0;
-  return cur.text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).length;
+  if (!cur) return [];
+  return cur.text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
 }
 
 // Write (or replace) a `process-request` marker at the repo root — same PUT/commit
