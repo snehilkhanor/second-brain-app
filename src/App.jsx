@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play, Hash } from "lucide-react";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play, Hash, Upload } from "lucide-react";
 import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxItems, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
@@ -173,7 +173,8 @@ export default function App() {
   const [snoozes,setSnoozes]=useState(()=>lsGetJSON("sb_snooze",{})); // local snoozes: id -> until ISO
   const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
   const [inboxItems,setInboxItems]=useState(()=>{ const v=lsGetJSON("sb_inbox",[]); return Array.isArray(v)?v:[]; }); // raw waiting lines from inbox.md
-  const [showProcess,setShowProcess]=useState(false);            // inbox/process sheet
+  const [showProcess,setShowProcess]=useState(false);            // brain sheet (Inbox / Outbox tabs)
+  const [brainTab,setBrainTab]=useState("inbox");                // which tab in the brain sheet: inbox | outbox
   const [dashView,setDashView]=useState("items");                // dashboard tab: items | para
   const [paraCard,setParaCard]=useState(null);                   // open PARA card panel (entry object)
   const [paraBodyOpen,setParaBodyOpen]=useState(false);          // "view full card" toggle in the PARA panel
@@ -276,6 +277,9 @@ export default function App() {
   }
   // Clear failed flags and try again (used by the "tap to retry" affordance).
   const retryFailed=()=>{ setOutboxP(outboxRef.current.map(it=> it.failed ? {...it,failed:false,err:undefined} : it)); flushOutbox(); };
+  // Retry ONE failed item: clear its failed flag and re-flush (single-flight). The flush
+  // re-reads the sha before the PUT and drops the item on a confirmed 2xx.
+  const retryItem=(id)=>{ setOutboxP(outboxRef.current.map(it=> it.id===id ? {...it,failed:false,err:undefined} : it)); flushOutbox(); };
   // Flush on launch and whenever the device comes back online.
   useEffect(()=>{
     const onOnline=()=>flushOutbox();
@@ -580,14 +584,16 @@ export default function App() {
     }catch(e){ showToast(`Couldn't request — ${e.message||e}`); }
   }
 
-  // Sync indicator (BRAIN strip): syncing… / N failed — tap to retry / N pending sync.
+  // Sync glance (BRAIN strip): syncing… / N failed / N pending. Tap opens the brain
+  // sheet's Outbox tab (the queue's home — per-item retry, retry-all, sync now live there).
   const failedCount=outbox.filter(it=>it.failed).length;
   const pendingCount=outbox.length-failedCount;
   const firstErr=(outbox.find(it=>it.failed)||{}).err;
-  const syncUI = syncing ? {txt:"syncing…", color:"#F5B344", onTap:null}
-    : failedCount>0 ? {txt:`${failedCount} failed${firstErr?` (${firstErr})`:""} — tap to retry`, color:"#F87171", onTap:retryFailed}
-    : pendingCount>0 ? {txt:`${pendingCount} pending sync · sync now`, color:"#F5B344", onTap:()=>flushOutbox()}
+  const syncUI = syncing ? {txt:"syncing…", color:"#F5B344"}
+    : failedCount>0 ? {txt:`${failedCount} failed${firstErr?` (${firstErr})`:""}`, color:"#F87171"}
+    : pendingCount>0 ? {txt:`${pendingCount} pending`, color:"#F5B344"}
     : null;
+  const openOutbox=()=>{ setBrainTab("outbox"); setShowProcess(true); };
 
   // connection status pill (header button)
   const st=status.state;
@@ -639,7 +645,7 @@ export default function App() {
     <div className="wrap">
       <style>{css}</style>
       <div className="hd">
-        <div onClick={()=>setShowProcess(true)} className="tap" style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}} title={`${inboxCount} in inbox`}>
+        <div onClick={()=>{setBrainTab("inbox");setShowProcess(true);}} className="tap" style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}} title={`${inboxCount} in inbox`}>
           <span style={{position:"relative",display:"flex"}}>
             <Brain size={20} color="#8B7CFF"/>
             {inboxCount>0&&<span className="mono" style={{position:"absolute",top:-7,right:-9,background:"#F5B344",color:"#0E1424",fontSize:9,fontWeight:700,minWidth:15,height:15,borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px",border:"2px solid #0A0F1C",lineHeight:1}}>{inboxCount}</span>}
@@ -657,7 +663,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); openOutbox();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>
@@ -779,31 +785,69 @@ export default function App() {
 
       {showProcess&&(
         <div className="sheet" style={{zIndex:14}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-            <span className="disp" style={{fontSize:18,fontWeight:700,display:"flex",alignItems:"center",gap:8}}><Inbox size={18} color="#F5B344"/> Inbox</span>
-            <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"1px solid #1B2440",marginBottom:14}}>
+            <div className="tabs">
+              <button className={"stab tap"+(brainTab==="inbox"?" on":"")} onClick={()=>setBrainTab("inbox")}><Inbox size={13}/> Inbox<span className="n">({inboxCount})</span></button>
+              <button className={"stab tap"+(brainTab==="outbox"?" on":"")} onClick={()=>setBrainTab("outbox")}><Upload size={13}/> Outbox<span className="n" style={failedCount>0?{color:"#F87171"}:undefined}>({outbox.length})</span></button>
+            </div>
+            <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0",marginBottom:6}}><X size={20}/></button>
           </div>
-          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:8}}>
-            <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
-          </div>
-          {inboxCount>0
-            ? <div style={{maxHeight:230,overflowY:"auto",background:"#F5F5F0",borderRadius:12,marginBottom:14}}>
-                {inboxList.map((line,i)=>(
-                  <div key={i} style={{display:"flex",gap:10,fontSize:11.5,lineHeight:1.5,padding:"7px 12px",borderBottom:i<inboxCount-1?"1px solid #E4E4DA":"none"}}>
-                    <span className="mono" style={{color:"#A8A894",minWidth:18,textAlign:"right",flexShrink:0,userSelect:"none"}}>{i+1}</span>
-                    <span className="mono" style={{color:"#2A2E22",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{line}</span>
-                  </div>
-                ))}
+
+          {brainTab==="inbox"&&(<>
+            <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:8}}>
+              <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
+            </div>
+            {inboxCount>0
+              ? <div style={{maxHeight:230,overflowY:"auto",background:"#F5F5F0",borderRadius:12,marginBottom:14}}>
+                  {inboxList.map((line,i)=>(
+                    <div key={i} style={{display:"flex",gap:10,fontSize:11.5,lineHeight:1.5,padding:"7px 12px",borderBottom:i<inboxCount-1?"1px solid #E4E4DA":"none"}}>
+                      <span className="mono" style={{color:"#A8A894",minWidth:18,textAlign:"right",flexShrink:0,userSelect:"none"}}>{i+1}</span>
+                      <span className="mono" style={{color:"#2A2E22",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{line}</span>
+                    </div>
+                  ))}
+                </div>
+              : <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0 14px"}}>Nothing waiting right now.</div>}
+            <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:16}}>
+              {conn.token
+                ? "Processing reads inbox.md, folds these into your cards, and clears the inbox. It runs in your brain processor — this just asks it to."
+                : "Connect your brain to capture and process. In demo mode nothing is written."}
+            </div>
+            {inboxCount>0&&<div className="mono" style={{fontSize:11,color:"#F5B344",textAlign:"center",marginBottom:8}}>~+{inboxCount*4} momentum when you process</div>}
+            <button onClick={processNow} disabled={!!conn.token&&!canProcess} className="tap" style={{width:"100%",background:(!!conn.token&&!canProcess)?"#2A3556":"#8B7CFF",color:(!!conn.token&&!canProcess)?"#6B7494":"#0E1424",border:"none",borderRadius:11,padding:"12px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6,cursor:(!!conn.token&&!canProcess)?"default":"pointer"}}><Play size={15}/> Process now</button>
+            {!!conn.token&&!canProcess&&<div className="mono" style={{fontSize:10.5,color:"#F5B344",textAlign:"center",marginTop:10}}>Finish syncing first — {outbox.length} pending</div>}
+          </>)}
+
+          {brainTab==="outbox"&&(<>
+            <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:12}}>
+              Writes queued for inbox.md. They sync automatically (one at a time); failed ones can be retried.
+              {(pendingCount>0||failedCount>0)&&<><br/>
+                {pendingCount>0&&<span style={{color:"#F5B344",fontWeight:600}}>{pendingCount} pending</span>}
+                {pendingCount>0&&failedCount>0&&<span> · </span>}
+                {failedCount>0&&<span style={{color:"#F87171",fontWeight:600}}>{failedCount} failed</span>}
+              </>}
+            </div>
+            {(failedCount>0||(pendingCount>0&&!syncing))&&(
+              <div style={{display:"flex",gap:8,marginBottom:12}}>
+                {failedCount>0&&<button onClick={retryFailed} className="tap" style={{flex:1,background:"#8B7CFF",color:"#0E1424",border:"none",borderRadius:10,padding:"9px 12px",fontWeight:700,fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><RotateCcw size={14}/> Retry all failed ({failedCount})</button>}
+                {pendingCount>0&&!syncing&&<button onClick={()=>flushOutbox()} className="tap" style={{flex:1,background:"#0E1424",color:"#F5B344",border:"1px solid #2A3556",borderRadius:10,padding:"9px 12px",fontWeight:700,fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Upload size={14}/> Sync now</button>}
               </div>
-            : <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0 14px"}}>Nothing waiting right now.</div>}
-          <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:16}}>
-            {conn.token
-              ? "Processing reads inbox.md, folds these into your cards, and clears the inbox. It runs in your brain processor — this just asks it to."
-              : "Connect your brain to capture and process. In demo mode nothing is written."}
-          </div>
-          {inboxCount>0&&<div className="mono" style={{fontSize:11,color:"#F5B344",textAlign:"center",marginBottom:8}}>~+{inboxCount*4} momentum when you process</div>}
-          <button onClick={processNow} disabled={!!conn.token&&!canProcess} className="tap" style={{width:"100%",background:(!!conn.token&&!canProcess)?"#2A3556":"#8B7CFF",color:(!!conn.token&&!canProcess)?"#6B7494":"#0E1424",border:"none",borderRadius:11,padding:"12px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6,cursor:(!!conn.token&&!canProcess)?"default":"pointer"}}><Play size={15}/> Process now</button>
-          {!!conn.token&&!canProcess&&<div className="mono" style={{fontSize:10.5,color:"#F5B344",textAlign:"center",marginTop:10}}>Finish syncing first — {outbox.length} pending</div>}
+            )}
+            {outbox.length===0
+              ? <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0"}}>Nothing queued — all synced.</div>
+              : <div style={{maxHeight:320,overflowY:"auto"}}>
+                  {outbox.map(it=>(
+                    <div key={it.id} style={{borderTop:"1px solid #232C46",padding:"10px 0"}}>
+                      <div className="mono" style={{fontSize:11.5,color:"#C3CAE0",lineHeight:1.5,wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{it.line}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginTop:6}}>
+                        {it.failed
+                          ? <span className="chip" style={{background:"#F8717122",color:"#F87171"}}>failed{it.err?` · ${it.err}`:""}</span>
+                          : <span className="chip" style={{background:"#F5B34422",color:"#F5B344"}}>{syncing?"syncing…":"pending"}</span>}
+                        {it.failed&&<button onClick={()=>retryItem(it.id)} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"4px 9px"}}><RotateCcw size={11}/> retry</button>}
+                      </div>
+                    </div>
+                  ))}
+                </div>}
+          </>)}
         </div>
       )}
 
