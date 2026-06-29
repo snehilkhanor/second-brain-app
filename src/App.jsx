@@ -147,7 +147,8 @@ export default function App() {
   const [status,setStatus]=useState(()=> loadConn().token ? {state:"idle"} : {state:"demo"});
   const [showSettings,setShowSettings]=useState(false);
   const [form,setForm]=useState(null);                           // settings-sheet draft
-  const [itemFilter,setItemFilter]=useState("all");              // all | decision | task
+  const [itemFilter,setItemFilter]=useState("all");              // all | decision | task (TYPE)
+  const [statusFilter,setStatusFilter]=useState("open");         // open | snoozed | resolved (STATUS — separate axis)
   const [types,setTypes]=useState(()=>lsGetJSON("sb_types",{}));   // local convert overrides: id -> type
   const [snoozes,setSnoozes]=useState(()=>lsGetJSON("sb_snooze",{})); // local snoozes: id -> until ISO
   const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
@@ -246,6 +247,9 @@ export default function App() {
   const snoozeUntil=(id)=> snoozes[id] || norm.dec[id]?.snooze_until || null;
   const isSnoozedFuture=(id)=>{ const u=snoozeUntil(id); return !!u && u > todayStr; };
   const isActiveOpen=(id)=> !resolved[id] && !isSnoozedFuture(id);
+  // STATUS bucket (mutually exclusive): resolved wins over snoozed wins over open.
+  // An item snoozed only until today-or-past is NOT snoozed → it's open again.
+  const statusOf=(id)=> resolved[id] ? "resolved" : isSnoozedFuture(id) ? "snoozed" : "open";
 
   const resolvedCount=Object.keys(resolved).length, captureCount=captures.length;
   const openCountTotal=Object.keys(norm.dec).filter(isActiveOpen).length;
@@ -339,6 +343,17 @@ export default function App() {
     if(conn.token) enqueue({id:"s_"+id+"_"+Date.now(), target:id, kind:"snooze", ts:Date.now(), message:"app: snooze",
       line:`snooze: [[${d.node}]] | "${d.text}" → until ${until} | ${today()}`});
     showToast(`Snoozed to ${until}${conn.token?"":" (demo)"}`);
+  };
+
+  // Wake a snoozed item now: optimistic local un-snooze (mark snooze=today, which
+  // reads as past → open again, overriding any server snooze_until) + append a
+  // wake line. The processor turns this into status:open on the next run.
+  const wakeNow=(id)=>{
+    const d=norm.dec[id]; if(!d) return;
+    const ns={...snoozes,[id]:today()}; setSnoozes(ns); persist("sb_snooze",ns); setOpenDec(null);
+    if(conn.token) enqueue({id:"w_"+id+"_"+Date.now(), target:id, kind:"wake", ts:Date.now(), message:"app: wake",
+      line:`wake: [[${d.node}]] | "${d.text}" → open | ${today()}`});
+    showToast(`Woke now${conn.token?"":" (demo)"}`);
   };
 
   // Link styling helpers — read the live "active" set (selected node + neighbours).
@@ -457,13 +472,16 @@ export default function App() {
   const node=selected?norm.nodes.find(n=>n.id===selected):null;
   const neighbors=selected?norm.links.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:norm.name[o]};}):[];
   const nodeDecs=selected?(norm.decsByNode[selected]||[]).filter(id=>!isSnoozedFuture(id)).map(id=>({id,...norm.dec[id]})):[];
+  // The list shows ONE status bucket at a time (Open / Snoozed / Resolved), then
+  // the TYPE filter narrows that bucket. Flagged items float to the top.
   const allDecs=Object.entries(norm.dec).map(([id,v])=>({id,...v}))
-    .filter(d=>!isSnoozedFuture(d.id))
+    .filter(d=> statusOf(d.id)===statusFilter)
     .filter(d=> itemFilter==="all" || effType(d.id)===itemFilter)
-    .sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
-  // Counts per filter (the visible, non-snoozed set, split by effective type).
+    .sort((a,b)=> (b.flagged?1:0)-(a.flagged?1:0));
+  // TYPE-filter counts reflect the CURRENT status view, so the numbers match the
+  // list (e.g. status=Snoozed → counts are of snoozed items only).
   const fCount={all:0,decision:0,task:0};
-  Object.keys(norm.dec).forEach(id=>{ if(isSnoozedFuture(id)) return; fCount.all++; fCount[effType(id)]++; });
+  Object.keys(norm.dec).forEach(id=>{ if(statusOf(id)!==statusFilter) return; fCount.all++; fCount[effType(id)]++; });
 
   // PROCESS-SAFETY GUARD: only safe to run the inbox processor once everything is
   // synced (else the processor won't see still-queued actions and items can briefly
@@ -585,12 +603,18 @@ export default function App() {
         <div className="card" style={{padding:16}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
           <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
+            <button className={statusFilter==="open"?"on":""} onClick={()=>{setStatusFilter("open");setOpenDec(null);}}>Open</button>
+            <button className={statusFilter==="snoozed"?"on":""} onClick={()=>{setStatusFilter("snoozed");setOpenDec(null);}}>Snoozed</button>
+            <button className={statusFilter==="resolved"?"on":""} onClick={()=>{setStatusFilter("resolved");setOpenDec(null);}}>Resolved</button>
+          </div>
+          <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
             <button className={itemFilter==="all"?"on":""} onClick={()=>setItemFilter("all")}>All {fCount.all}</button>
             <button className={itemFilter==="decision"?"on":""} onClick={()=>setItemFilter("decision")}>Decisions {fCount.decision}</button>
             <button className={itemFilter==="task"?"on":""} onClick={()=>setItemFilter("task")}>Tasks {fCount.task}</button>
           </div>
-          <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
-          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} itemType={effType(d.id)} nameMap={norm.name}/>)}
+          <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>{statusFilter==="open"?"tap to act · or tap a node above":statusFilter==="snoozed"?"sleeping until their wake date":"already handled"}</div>
+          {allDecs.length===0&&<div className="mono" style={{fontSize:11,color:"#5C678C",padding:"8px 0"}}>nothing {statusFilter==="open"?"open":statusFilter} here</div>}
+          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={isSnoozedFuture(d.id)?snoozeUntil(d.id):null} itemType={effType(d.id)} nameMap={norm.name}/>)}
         </div>
         <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
@@ -615,7 +639,7 @@ export default function App() {
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
-          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)}
+          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={null} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)}
         </div>
       )}
 
@@ -656,13 +680,16 @@ function Stat({icon,v,l,c}){return(<div style={{display:"flex",alignItems:"cente
 
 // Module-scope (stable identity) so typing in the outcome box doesn't remount
 // the textarea and drop focus / dismiss the keyboard.
-function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, onConvert, onSnooze, itemType, nameMap}) {
+function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, onConvert, onSnooze, onWakeNow, snoozeUntilDate, itemType, nameMap}) {
   const isRes=!!resolved[d.id], isOpen=openDec===d.id;
   const [snz,setSnz]=useState(false);
   const isTask=itemType==="task";
   const typeColor=isTask?"#5BD6A8":"#8B7CFF";
   const addDays=(n)=>{ const dt=new Date(); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
   const pick=(iso)=>{ setSnz(false); onSnooze(d.id, iso); };
+  // "2026-06-30" -> "Jun 30" (anchored to local midnight to avoid TZ drift).
+  const fmtDate=(iso)=>{ try { return new Date(iso+"T00:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"}); } catch { return iso; } };
+  const isSnoozed=!!snoozeUntilDate && !isRes;
   return (
     <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
       <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
@@ -678,6 +705,11 @@ function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome,
         </div>
         {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
       </div>
+
+      {isSnoozed&&(<div style={{display:"flex",alignItems:"center",gap:10,marginLeft:29,marginTop:6}}>
+        <span className="mono" style={{fontSize:10.5,color:"#F5B344",display:"flex",alignItems:"center",gap:4}}><Clock size={11}/> snoozed until {fmtDate(snoozeUntilDate)}</span>
+        <button onClick={(e)=>{e.stopPropagation();onWakeNow(d.id);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#5BD6A8",fontSize:10.5,padding:"4px 9px"}}><RotateCcw size={11}/> wake now</button>
+      </div>)}
 
       {isOpen&&!isRes&&(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:29,marginTop:9,flexWrap:"wrap"}}>
         <button onClick={(e)=>{e.stopPropagation();onConvert(d.id);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"5px 9px"}}><Repeat size={11}/> to {isTask?"decision":"task"}</button>
