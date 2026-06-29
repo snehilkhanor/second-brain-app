@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play } from "lucide-react";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play, Hash } from "lucide-react";
 import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxItems, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
@@ -209,6 +209,12 @@ export default function App() {
   // On launch: if connected, refresh graph + inbox count in the background
   // (the mirrors already show instantly).
   useEffect(()=>{ if(conn.token){ refresh(conn); refreshInbox(conn); } },[]); // eslint-disable-line
+
+  // Manual refresh button (replaces pull-to-refresh, which yanks the OS shade in a
+  // standalone PWA). Full reload: picks up a newly deployed app version, and data
+  // re-pulls on launch (graph.json + inbox). Outbox/queue/state persist in
+  // localStorage, so a reload is safe and loses nothing unsynced.
+  function doRefresh(){ window.location.reload(); }
 
   // Outbox flush. Single-flight: only ONE flush runs at a time; actions that fire
   // mid-flush just enqueue and the running loop picks them up. Each pass:
@@ -606,9 +612,10 @@ export default function App() {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
+          <button className="conn" onClick={doRefresh} title="Refresh" aria-label="Refresh" style={{color:"#8A94B0",padding:"6px 9px"}}><RefreshCw size={16} className={status.state==="loading"?"spin":""}/></button>
           <div className="seg">
-            <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")}>Glow</button>
-            <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")}>Badge</button>
+            <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")} title="Glow" aria-label="Glow" style={{display:"flex",alignItems:"center"}}><Sparkles size={15}/></button>
+            <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")} title="Badge" aria-label="Badge" style={{display:"flex",alignItems:"center"}}><Hash size={15}/></button>
           </div>
         </div>
       </div>
