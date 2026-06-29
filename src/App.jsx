@@ -110,6 +110,7 @@ export default function App() {
   const [resolved,setResolved]=useState(()=>lsGetJSON("sb_res",{}));
   const [captures,setCaptures]=useState(()=>lsGetJSON("sb_cap",[]));
   const [outbox,setOutbox]=useState(()=>lsGetJSON("sb_outbox",[]));   // writes not yet pushed
+  const [syncing,setSyncing]=useState(false);                        // a flush is in flight
   const [draft,setDraft]=useState("");
   const [openDec,setOpenDec]=useState(null);
   const [outcome,setOutcome]=useState("");
@@ -161,17 +162,22 @@ export default function App() {
   // Outbox: append queued writes to inbox.md one-by-one, in order. A write that
   // fails (e.g. no signal) stays queued and is retried later — a thought is
   // never lost. Sequential, because each append reads-then-writes the file.
+  // Single-flight: only ONE flush runs at a time. Actions that fire mid-flush
+  // just enqueue (outboxRef grows) and the running loop drains them — we never
+  // start a second concurrent flush, so no two appends race on the same sha.
   async function flushOutbox(c=conn){
     if(flushing.current || !c.token || !navigator.onLine) return;
-    flushing.current=true;
+    flushing.current=true; setSyncing(true);
     try{
-      // Re-read the live queue each pass so items enqueued mid-flush are caught.
+      // Strictly sequential. Re-read the live queue each pass so items enqueued
+      // mid-flush are caught. appendToInbox re-fetches the sha right before each
+      // PUT and retries on 409/422; an item is removed only on a confirmed 2xx.
       while(outboxRef.current.length){
         const item=outboxRef.current[0];
         try{ await appendToInbox(c, item.line, item.message); setOutboxP(outboxRef.current.slice(1)); }
-        catch(e){ break; }   // stop at the first failure; keep the rest for next time
+        catch(e){ break; }   // leave this + the rest queued, in order; retry on launch/online/sync-now
       }
-    } finally { flushing.current=false; }
+    } finally { flushing.current=false; setSyncing(false); }   // queued count + sync state refresh reactively
   }
   // Flush on launch and whenever the device comes back online.
   useEffect(()=>{
@@ -391,6 +397,15 @@ export default function App() {
   const fCount={all:0,decision:0,task:0};
   Object.keys(norm.dec).forEach(id=>{ if(isSnoozedFuture(id)) return; fCount.all++; fCount[effType(id)]++; });
 
+  // PROCESS-SAFETY GUARD: only safe to run the inbox processor once everything is
+  // synced (else the processor won't see still-queued actions and items can briefly
+  // reappear as open until they sync and you reprocess). There is no in-app
+  // "Process now" trigger today (processing runs in Claude Code), so the guard
+  // surfaces as the amber "N pending sync" indicator in the BRAIN strip. If a
+  // process trigger is ever added, gate it on `canProcess` and, while false, show
+  // "Finish syncing before processing — N pending".
+  const canProcess = outbox.length===0 && !syncing;
+
   // connection status pill (header button)
   const st=status.state;
   const statusUI = st==="ok"   ? {icon:<Cloud size={16}/>, color:"#5BD6A8", label:"synced"}
@@ -447,7 +462,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{outbox.length>0&&<span style={{color:"#F5B344"}}> · {outbox.length} queued</span>}</span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{(syncing||outbox.length>0)&&<span onClick={(e)=>{e.stopPropagation(); if(!syncing) flushOutbox();}} className="tap" style={{color:"#F5B344",fontWeight:600}}> · {syncing?"syncing…":`${outbox.length} pending sync · sync now`}</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>

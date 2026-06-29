@@ -112,20 +112,41 @@ async function putFile({ token, owner, repo, branch }, path, text, sha, message)
     headers: { ...ghHeaders(token), "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (r.status === 401) throw new Error("Bad token (401) — needs Contents write");
-  if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {} throw new Error(`GitHub write error ${r.status}${m ? ": " + m : ""}`); }
+  if (r.status === 401) { const e = new Error("Bad token (401) — needs Contents write"); e.status = 401; throw e; }
+  if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {} const e = new Error(`GitHub write error ${r.status}${m ? ": " + m : ""}`); e.status = r.status; throw e; }
   return r.json();
 }
 
-// Append ONE line to inbox.md (created if missing). Append-only: read current
-// content + sha, add the line, PUT it back. Never edits cards or any other file.
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// Append ONE line to inbox.md (created if missing). Append-only; never edits
+// cards or any other file.
+//
+// Reliable under bursts: re-fetch the current sha immediately before EACH PUT
+// (never reuse a sha from earlier in the batch), and on a 409/422 sha-conflict
+// (e.g. GitHub's read-after-write lag) re-fetch and retry the SAME line with a
+// small backoff. The line is only considered written on a confirmed 2xx.
+//
+// Newlines: the existing content is normalised to end with exactly one "\n",
+// then the new line (trailing whitespace trimmed) is appended with its own
+// trailing "\n" — so every action line lands on its own line, no run-ons, no
+// double blanks.
 export async function appendToInbox(conn, line, message = "app: capture") {
   if (!conn.token) throw new Error("Not connected");
-  const cur = await getFileRaw(conn, "inbox.md");
-  const base = cur ? cur.text : "";
-  const sep = base.length && !base.endsWith("\n") ? "\n" : "";
-  const next = base + sep + line + "\n";
-  await putFile(conn, "inbox.md", next, cur?.sha, message);
+  const newLine = String(line).replace(/\s+$/, "") + "\n";
+  let lastErr;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const cur = await getFileRaw(conn, "inbox.md");
+    const base = (cur ? cur.text : "").replace(/\s+$/, ""); // strip trailing blanks/newlines
+    const next = (base ? base + "\n" : "") + newLine;       // exactly one "\n" before the new line
+    try {
+      return await putFile(conn, "inbox.md", next, cur?.sha, message); // 2xx = confirmed write
+    } catch (e) {
+      if (e.status === 409 || e.status === 422) { lastErr = e; await sleep(200 * (attempt + 1)); continue; }
+      throw e; // non-conflict (offline/auth/etc.) — leave it queued, bubble up
+    }
+  }
+  throw lastErr || new Error("append failed after retries");
 }
 
 // --- normalisation ----------------------------------------------------------
