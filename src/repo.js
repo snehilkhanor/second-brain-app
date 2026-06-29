@@ -146,6 +146,7 @@ export function normalize(g) {
     label: n.label || n.id,
     kind: n.type || "rival",
     summary: n.summary || "",
+    card: n.card || "",                 // full markdown body (for "View full card")
     connections: n.connections != null ? n.connections : (deg[n.id] || 0),
   }));
   const links = rawLinks.map((l) => [l.source, l.target, l.label || ""]);
@@ -153,13 +154,20 @@ export function normalize(g) {
   const name = Object.fromEntries(nodes.map((n) => [n.id, n.label]));
   const summary = Object.fromEntries(nodes.map((n) => [n.id, n.summary]));
 
-  // A decision's identity is (card + text) unless an explicit id is given, so
-  // that resolving it stays stable across reloads and matches the resolved:
-  // line the phone will append in Step 4.
+  // An item's identity is `entity + text` (unless an explicit id is given) so it
+  // stays byte-stable across runs and matches the action lines the app appends.
+  // Items carry type (decision|task) and status/snooze (no `card`, no `since`).
   const dec = {};
   rawDecs.forEach((d) => {
-    const id = d.id || `${d.card}::${d.text}`;
-    dec[id] = { node: d.card, text: d.text, flagged: !!d.flagged, since: d.since || "" };
+    const id = d.id || `${d.entity}::${d.text}`;
+    dec[id] = {
+      node: d.entity,
+      text: d.text,
+      type: d.type === "task" ? "task" : "decision",
+      flagged: !!d.flagged,
+      status: d.status || "open",
+      snooze_until: d.snooze_until || null,
+    };
   });
   const decsByNode = {};
   Object.entries(dec).forEach(([id, v]) => { (decsByNode[v.node] = decsByNode[v.node] || []).push(id); });

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw } from "lucide-react";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText } from "lucide-react";
 import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
@@ -44,16 +44,16 @@ const SUMMARY = {
   hulp:"Delhi NCR family PA. Pod of 3, billed on coordination hours.",
 };
 const DEC = {
-  d1:{node:"trulymadly", flagged:true, text:"Pull the 40+ gender ratio on TM MAU before committing to premium 40+."},
-  d2:{node:"trulymadly", text:"Test Twamev vs Tum Mile on ~40 real 40+ users."},
-  d7:{node:"trulymadly", text:"Unified packaging: Select / Select Plus / VIP."},
-  d3:{node:"thirdman", text:"Pricing fork: mass-prosumer vs premium CXO."},
-  d4:{node:"thirdman", text:"Which AI primitives are reliable enough for a CXO today?"},
-  d5:{node:"madlabs", text:"Incubate vs build vs partner for new lines."},
-  d6:{node:"madlabs", text:"Fundraising path for TM / Mad Labs ($4-5M)."},
-  d8:{node:"trumitr", text:"Re-run the AI Mitr A/B after revenue-drop cause is understood."},
-  d9:{node:"snehil", text:"Build a Founder's Office + Chief of Staff role."},
-  d10:{node:"snehil", text:"House purchase vs spend ceiling."},
+  d1:{node:"trulymadly", flagged:true, type:"decision", text:"Pull the 40+ gender ratio on TM MAU before committing to premium 40+."},
+  d2:{node:"trulymadly", type:"task", text:"Test Twamev vs Tum Mile on ~40 real 40+ users."},
+  d7:{node:"trulymadly", type:"decision", text:"Unified packaging: Select / Select Plus / VIP."},
+  d3:{node:"thirdman", type:"decision", text:"Pricing fork: mass-prosumer vs premium CXO."},
+  d4:{node:"thirdman", type:"decision", text:"Which AI primitives are reliable enough for a CXO today?"},
+  d5:{node:"madlabs", type:"decision", text:"Incubate vs build vs partner for new lines."},
+  d6:{node:"madlabs", type:"decision", text:"Fundraising path for TM / Mad Labs ($4-5M)."},
+  d8:{node:"trumitr", type:"task", text:"Re-run the AI Mitr A/B after revenue-drop cause is understood."},
+  d9:{node:"snehil", type:"decision", text:"Build a Founder's Office + Chief of Staff role."},
+  d10:{node:"snehil", type:"task", text:"House purchase vs spend ceiling."},
 };
 const COL = { hub:0xF5B344, venture:0x8B7CFF, person:0x5BD6A8, org:0x5BD6A8, rival:0x6B7494 };
 const HEX = { hub:"#F5B344", venture:"#8B7CFF", person:"#5BD6A8", org:"#5BD6A8", rival:"#6B7494" };
@@ -64,11 +64,24 @@ const SAMPLE_GRAPH = (() => {
   const deg = {};
   LINKS.forEach(([s,t])=>{ deg[s]=(deg[s]||0)+1; deg[t]=(deg[t]||0)+1; });
   const openByNode = {};
-  Object.values(DEC).forEach(d=>{ openByNode[d.node]=(openByNode[d.node]||0)+1; });
+  const itemsByNode = {};
+  Object.values(DEC).forEach(d=>{ openByNode[d.node]=(openByNode[d.node]||0)+1; (itemsByNode[d.node]=itemsByNode[d.node]||[]).push(d); });
+  // Synthesize a small demo card from each node's summary + open threads, so
+  // "View full card" demonstrates in the no-token demo too.
+  const demoCard = (n) => {
+    const items = itemsByNode[n.id] || [];
+    const decs = items.filter(d=>(d.type||"decision")==="decision").map(d=>"- "+d.text);
+    const tasks = items.filter(d=>d.type==="task").map(d=>"- "+d.text);
+    const sections = [];
+    if(decs.length) sections.push("### Decisions\n"+decs.join("\n"));
+    if(tasks.length) sections.push("### Tasks\n"+tasks.join("\n"));
+    const open = sections.length ? "\n\n## Open threads\n\n"+sections.join("\n\n") : "";
+    return `# ${n.label}\n\n${SUMMARY[n.id]||""}${open}`;
+  };
   return {
-    nodes: NODES.map(n=>({ id:n.id, label:n.label, type:n.kind, summary:SUMMARY[n.id]||"", connections:deg[n.id]||0, open_decisions:openByNode[n.id]||0 })),
+    nodes: NODES.map(n=>({ id:n.id, label:n.label, type:n.kind, summary:SUMMARY[n.id]||"", connections:deg[n.id]||0, open_decisions:openByNode[n.id]||0, card:demoCard(n) })),
     links: LINKS.map(([source,target,label])=>({ source, target, label })),
-    open_decisions: Object.entries(DEC).map(([id,d])=>({ id, card:d.node, text:d.text, flagged:!!d.flagged })),
+    open_decisions: Object.entries(DEC).map(([id,d])=>({ id, entity:d.node, text:d.text, type:d.type||"decision", flagged:!!d.flagged, status:"open", snooze_until:null })),
   };
 })();
 
@@ -108,12 +121,17 @@ export default function App() {
   const [status,setStatus]=useState(()=> loadConn().token ? {state:"idle"} : {state:"demo"});
   const [showSettings,setShowSettings]=useState(false);
   const [form,setForm]=useState(null);                           // settings-sheet draft
+  const [itemFilter,setItemFilter]=useState("all");              // all | decision | task
+  const [types,setTypes]=useState(()=>lsGetJSON("sb_types",{}));   // local convert overrides: id -> type
+  const [snoozes,setSnoozes]=useState(()=>lsGetJSON("sb_snooze",{})); // local snoozes: id -> until ISO
+  const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
 
   const norm=useMemo(()=>normalize(graph),[graph]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
-  const outboxRef=useRef(outbox), flushing=useRef(false);
+  const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({});
+  useEffect(()=>{ setCardOpen(false); },[selected]);   // collapse "full card" when switching nodes
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
   // Update the ref synchronously so flushOutbox(), called right after, sees the
@@ -174,13 +192,34 @@ export default function App() {
     setGraph(SAMPLE_GRAPH); setStatus({state:"demo"}); setShowSettings(false);
   }
 
+  const today=()=>new Date().toISOString().slice(0,10);
+  const todayStr=today();
+
+  // Local overlays. convert -> type override; snooze -> hidden until a date.
+  // A snoozed item whose date is today-or-past is treated as OPEN again (contract).
+  const effType=(id)=> types[id] || norm.dec[id]?.type || "decision";
+  const snoozeUntil=(id)=> snoozes[id] || norm.dec[id]?.snooze_until || null;
+  const isSnoozedFuture=(id)=>{ const u=snoozeUntil(id); return !!u && u > todayStr; };
+  const isActiveOpen=(id)=> !resolved[id] && !isSnoozedFuture(id);
+
   const resolvedCount=Object.keys(resolved).length, captureCount=captures.length;
-  const openCountTotal=Object.keys(norm.dec).length-resolvedCount;
-  const momentum=norm.nodes.length*2+norm.links.length*3+resolvedCount*30+captureCount*4;
+  const openCountTotal=Object.keys(norm.dec).filter(isActiveOpen).length;
+
+  // Per-node count of active-open items (drives glow/badge); snooze-aware.
+  const openCountByNode=useMemo(()=>{
+    const m={};
+    Object.keys(norm.dec).forEach(id=>{ if(isActiveOpen(id)){ const n=norm.dec[id].node; m[n]=(m[n]||0)+1; } });
+    return m;
+  },[norm,resolved,snoozes,todayStr]); // eslint-disable-line
+  useEffect(()=>{ openCountRef.current=openCountByNode; },[openCountByNode]);
+
+  // Momentum: entity*2 + connection*3 + decision_resolved*30 + task_done*50 + capture*4
+  let decResolved=0, taskDone=0;
+  Object.keys(resolved).forEach(id=>{ effType(id)==="task" ? taskDone++ : decResolved++; });
+  const momentum=norm.nodes.length*2+norm.links.length*3+decResolved*30+taskDone*50+captureCount*4;
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
-  const today=()=>new Date().toISOString().slice(0,10);
   const enqueue=(item)=>{ const q=[...outboxRef.current,item]; setOutboxP(q); flushOutbox(); };
 
   // Resolve a decision: instant local glow/badge drop, then append a structured
@@ -207,6 +246,25 @@ export default function App() {
     if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
     enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
     showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
+  };
+
+  // Convert an item decision<->task: optimistic local override + append a convert line.
+  const convert=(id)=>{
+    const d=norm.dec[id]; if(!d) return;
+    const nextType=effType(id)==="task"?"decision":"task";
+    const nt={...types,[id]:nextType}; setTypes(nt); persist("sb_types",nt);
+    if(conn.token) enqueue({id:"v_"+id+"_"+Date.now(), kind:"convert", ts:Date.now(), message:"app: convert",
+      line:`convert: [[${d.node}]] | "${d.text}" → ${nextType} | ${today()}`});
+    showToast(`Now a ${nextType}${conn.token?"":" (demo)"}`);
+  };
+
+  // Snooze an item until a date: optimistic local hide + append a snooze line.
+  const snooze=(id,until)=>{
+    const d=norm.dec[id]; if(!d||!until) return;
+    const ns={...snoozes,[id]:until}; setSnoozes(ns); persist("sb_snooze",ns); setOpenDec(null);
+    if(conn.token) enqueue({id:"s_"+id+"_"+Date.now(), kind:"snooze", ts:Date.now(), message:"app: snooze",
+      line:`snooze: [[${d.node}]] | "${d.text}" → until ${until} | ${today()}`});
+    showToast(`Snoozed to ${until}${conn.token?"":" (demo)"}`);
   };
 
   // Link styling helpers — read the live "active" set (selected node + neighbours).
@@ -281,12 +339,12 @@ export default function App() {
     let raf, clock=0;
     function decorate(){
       raf=requestAnimationFrame(decorate); clock+=0.05;
-      const res=resRef.current, md=modeRef.current, sel=selRef.current, n0=normRef.current;
+      const md=modeRef.current, sel=selRef.current, n0=normRef.current;
       controls.autoRotate = !sel;
       const act=activeRef.current;   // null = nothing selected; otherwise selected + neighbours
       n0.nodes.forEach(n=>{
         const R=refsRef.current[n.id]; if(!R) return;
-        const open=(n0.decsByNode[n.id]||[]).filter(d=>!res[d]).length;
+        const open=openCountRef.current[n.id]||0;   // active-open count (resolve- and snooze-aware)
         const isSel=sel===n.id; const ts=isSel?1.5:1;
         const dim = act && !act.has(n.id);   // a node is dimmed when it's outside the selection's neighbourhood
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
@@ -324,8 +382,11 @@ export default function App() {
 
   const node=selected?norm.nodes.find(n=>n.id===selected):null;
   const neighbors=selected?norm.links.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:norm.name[o]};}):[];
-  const nodeDecs=selected?(norm.decsByNode[selected]||[]).map(id=>({id,...norm.dec[id]})):[];
-  const allDecs=Object.entries(norm.dec).map(([id,v])=>({id,...v})).sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
+  const nodeDecs=selected?(norm.decsByNode[selected]||[]).filter(id=>!isSnoozedFuture(id)).map(id=>({id,...norm.dec[id]})):[];
+  const allDecs=Object.entries(norm.dec).map(([id,v])=>({id,...v}))
+    .filter(d=>!isSnoozedFuture(d.id))
+    .filter(d=> itemFilter==="all" || effType(d.id)===itemFilter)
+    .sort((a,b)=>((resolved[a.id]?2:0)-(b.flagged?0.5:0))-((resolved[b.id]?2:0)-(a.flagged?0.5:0)));
 
   // connection status pill (header button)
   const st=status.state;
@@ -427,9 +488,14 @@ export default function App() {
         </div>
 
         <div className="card" style={{padding:16}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}><span className="disp" style={{fontWeight:600,fontSize:14}}>All decisions</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span><span className="mono" style={{fontSize:11,color:"#5BD6A8"}}>{resolvedCount} resolved</span></div>
+          <div className="seg" style={{marginBottom:8,width:"fit-content"}}>
+            <button className={itemFilter==="all"?"on":""} onClick={()=>setItemFilter("all")}>All</button>
+            <button className={itemFilter==="decision"?"on":""} onClick={()=>setItemFilter("decision")}>Decisions</button>
+            <button className={itemFilter==="task"?"on":""} onClick={()=>setItemFilter("task")}>Tasks</button>
+          </div>
           <div className="mono" style={{fontSize:10,color:"#6B7494",marginBottom:6}}>tap to act · or tap a node above</div>
-          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}
+          {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} itemType={effType(d.id)} nameMap={norm.name}/>)}
         </div>
         <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
@@ -446,11 +512,15 @@ export default function App() {
             <button onClick={()=>{setSelected(null);setOpenDec(null);}} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
           <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{norm.summary[node.id]||<span style={{color:"#6B7494"}}>No summary yet — it'll appear after the next processing run.</span>}</div>
+          {node.card&&(<div style={{marginBottom:16}}>
+            <button onClick={()=>setCardOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {cardOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:cardOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
+            {cardOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(node.card)}}/>}
+          </div>)}
           <div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:8}}>CONNECTIONS ({neighbors.length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
-          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN DECISIONS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} nameMap={norm.name}/>)}</>)}
+          {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)}
         </div>
       )}
 
@@ -491,8 +561,13 @@ function Stat({icon,v,l,c}){return(<div style={{display:"flex",alignItems:"cente
 
 // Module-scope (stable identity) so typing in the outcome box doesn't remount
 // the textarea and drop focus / dismiss the keyboard.
-function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, nameMap}) {
+function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome, onResolve, onReopen, onConvert, onSnooze, itemType, nameMap}) {
   const isRes=!!resolved[d.id], isOpen=openDec===d.id;
+  const [snz,setSnz]=useState(false);
+  const isTask=itemType==="task";
+  const typeColor=isTask?"#5BD6A8":"#8B7CFF";
+  const addDays=(n)=>{ const dt=new Date(); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
+  const pick=(iso)=>{ setSnz(false); onSnooze(d.id, iso); };
   return (
     <div style={{borderTop:compact?"1px solid #232C46":"none",borderBottom:!compact?"1px solid #232C46":"none",padding:"10px 0",opacity:isRes?0.55:1}}>
       <div onClick={()=>{if(!isRes){setOpenDec(isOpen?null:d.id);setOutcome("");}}} className="tap" style={{display:"flex",gap:9,alignItems:"flex-start"}}>
@@ -501,15 +576,55 @@ function DecRow({d, compact, resolved, openDec, setOpenDec, outcome, setOutcome,
           <div style={{fontSize:13,lineHeight:1.42,color:isRes?"#8A94B0":"#E8ECF7",textDecoration:isRes?"line-through":"none"}}>
             {d.flagged&&!isRes&&<AlertTriangle size={12} color="#F5B344" style={{verticalAlign:"-2px",marginRight:4}}/>}{d.text}
           </div>
-          <div className="mono" style={{fontSize:10,color:"#6B7494",marginTop:3}}>{nameMap[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
+            <span className="chip" style={{background:typeColor+"22",color:typeColor,fontSize:9}}>{itemType}</span>
+            <span className="mono" style={{fontSize:10,color:"#6B7494"}}>{nameMap[d.node]}{isRes&&resolved[d.id].outcome?` · ${resolved[d.id].outcome}`:""}</span>
+          </div>
         </div>
         {!isRes&&<ChevronDown size={15} color="#6B7494" style={{flexShrink:0,marginTop:2,transform:isOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
       </div>
+
+      {!isRes&&(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:29,marginTop:7,flexWrap:"wrap"}}>
+        <button onClick={(e)=>{e.stopPropagation();onConvert(d.id);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"5px 9px"}}><Repeat size={11}/> to {isTask?"decision":"task"}</button>
+        <button onClick={(e)=>{e.stopPropagation();setSnz(s=>!s);}} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"5px 9px"}}><Clock size={11}/> snooze <ChevronDown size={11} style={{transform:snz?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
+        {snz&&(<div className="exp" style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4,width:"100%"}}>
+          {[["1 day",1],["3 days",3],["1 week",7],["2 weeks",14]].map(([lbl,n])=>(
+            <button key={n} onClick={(e)=>{e.stopPropagation();pick(addDays(n));}} className="tap mono" style={{background:"#161E33",border:"1px solid #2A3556",borderRadius:8,color:"#E8ECF7",fontSize:10.5,padding:"5px 9px"}}>{lbl}</button>
+          ))}
+          <input type="date" onClick={(e)=>e.stopPropagation()} onChange={(e)=>e.target.value&&pick(e.target.value)} className="mono" style={{background:"#161E33",border:"1px solid #2A3556",borderRadius:8,color:"#E8ECF7",fontSize:10.5,padding:"4px 8px"}}/>
+        </div>)}
+      </div>)}
+
       {isOpen&&!isRes&&(<div className="exp" style={{marginTop:9,marginLeft:29}}>
-        <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder="What did you decide?" style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
-        <button onClick={()=>onResolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> Resolve</button>
+        <textarea value={outcome} onChange={e=>setOutcome(e.target.value)} rows={2} placeholder={isTask?"What got done?":"What did you decide?"} style={{width:"100%",background:"#0E1424",border:"1px solid #232C46",borderRadius:9,color:"#E8ECF7",padding:"8px 10px",fontSize:12.5,outline:"none",resize:"none"}}/>
+        <button onClick={()=>onResolve(d.id)} className="tap" style={{marginTop:7,background:"#5BD6A8",color:"#0E1424",border:"none",borderRadius:8,padding:"7px 13px",fontWeight:600,fontSize:12.5,display:"flex",alignItems:"center",gap:5}}><Check size={13}/> {isTask?"Mark done":"Resolve"}</button>
       </div>)}
       {isRes&&<button onClick={()=>onReopen(d.id)} className="tap mono" style={{marginLeft:29,marginTop:4,background:"transparent",border:"none",color:"#6B7494",fontSize:10,display:"flex",alignItems:"center",gap:4,padding:0}}><RotateCcw size={10}/> reopen</button>}
     </div>
   );
+}
+
+// Minimal, dependency-free markdown -> HTML for the "View full card" panel.
+// Escapes HTML first, then applies a small subset (headings, bold, code, lists,
+// [[wikilinks]], http links). Used only on the user's own card content.
+function mdToHtml(md){
+  const esc=(s)=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const inline=(t)=> esc(t)
+    .replace(/\[\[([^\]]+)\]\]/g,'<span style="color:#8B7CFF">$1</span>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/`([^`]+)`/g,'<code style="background:#0E1424;padding:1px 5px;border-radius:4px;font-size:12px">$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,txt,url)=> /^https?:\/\//.test(url)?`<a href="${url}" target="_blank" rel="noreferrer" style="color:#8B7CFF">${txt}</a>`:txt);
+  const lines=(md||"").split("\n"); let html=""; let inList=false;
+  const closeList=()=>{ if(inList){ html+="</ul>"; inList=false; } };
+  for(const raw of lines){
+    const line=raw.replace(/\s+$/,"");
+    if(/^###\s+/.test(line)){ closeList(); html+=`<div style="font-weight:700;font-size:12px;color:#AEB7D4;margin:9px 0 2px">${inline(line.replace(/^###\s+/,""))}</div>`; }
+    else if(/^##\s+/.test(line)){ closeList(); html+=`<div style="font-weight:700;font-size:13px;color:#C3CAE0;margin:11px 0 3px">${inline(line.replace(/^##\s+/,""))}</div>`; }
+    else if(/^#\s+/.test(line)){ closeList(); html+=`<div style="font-weight:700;font-size:15px;color:#E8ECF7;margin:6px 0 5px">${inline(line.replace(/^#\s+/,""))}</div>`; }
+    else if(/^\s*[-*]\s+/.test(line)){ if(!inList){ html+='<ul style="margin:3px 0 3px 16px;padding:0">'; inList=true; } html+=`<li style="margin:3px 0">${inline(line.replace(/^\s*[-*]\s+/,""))}</li>`; }
+    else if(line.trim()===""){ closeList(); html+='<div style="height:7px"></div>'; }
+    else { closeList(); html+=`<div style="margin:3px 0">${inline(line)}</div>`; }
+  }
+  closeList();
+  return html;
 }
