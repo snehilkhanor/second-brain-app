@@ -580,7 +580,13 @@ export default function App() {
     <div className="wrap">
       <style>{css}</style>
       <div className="hd">
-        <div style={{display:"flex",alignItems:"center",gap:8}}><Brain size={20} color="#8B7CFF"/><span className="disp" style={{fontWeight:700,fontSize:17}}>second brain</span></div>
+        <div onClick={()=>setShowProcess(true)} className="tap" style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}} title={`${inboxCount} in inbox`}>
+          <span style={{position:"relative",display:"flex"}}>
+            <Brain size={20} color="#8B7CFF"/>
+            {inboxCount>0&&<span className="mono" style={{position:"absolute",top:-7,right:-9,background:"#F5B344",color:"#0E1424",fontSize:9,fontWeight:700,minWidth:15,height:15,borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px",border:"2px solid #0A0F1C",lineHeight:1}}>{inboxCount}</span>}
+          </span>
+          <span className="disp" style={{fontWeight:700,fontSize:17}}>second brain</span>
+        </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
           <div className="seg">
@@ -591,7 +597,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span> · <span onClick={(e)=>{e.stopPropagation(); setShowProcess(true);}} className="tap" style={{color:inboxCount>0?"#F5B344":"#5C678C",fontWeight:inboxCount>0?600:500}}>{inboxCount} in inbox</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>
@@ -687,9 +693,12 @@ export default function App() {
             <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
           </div>
           {inboxCount>0
-            ? <div style={{maxHeight:230,overflowY:"auto",background:"#0E1424",border:"1px solid #232C46",borderRadius:12,marginBottom:14}}>
+            ? <div style={{maxHeight:230,overflowY:"auto",background:"#F5F5F0",borderRadius:12,marginBottom:14}}>
                 {inboxList.map((line,i)=>(
-                  <div key={i} className="mono" style={{fontSize:11.5,color:"#C3CAE0",lineHeight:1.5,padding:"8px 12px",borderBottom:i<inboxCount-1?"1px solid #1B2440":"none",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{line}</div>
+                  <div key={i} style={{display:"flex",gap:10,fontSize:11.5,lineHeight:1.5,padding:"7px 12px",borderBottom:i<inboxCount-1?"1px solid #E4E4DA":"none"}}>
+                    <span className="mono" style={{color:"#A8A894",minWidth:18,textAlign:"right",flexShrink:0,userSelect:"none"}}>{i+1}</span>
+                    <span className="mono" style={{color:"#2A2E22",wordBreak:"break-word",whiteSpace:"pre-wrap"}}>{line}</span>
+                  </div>
                 ))}
               </div>
             : <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0 14px"}}>Nothing waiting right now.</div>}
