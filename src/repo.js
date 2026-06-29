@@ -162,6 +162,24 @@ export async function appendToInbox(conn, lines, message = "app: write") {
   }
 }
 
+// Count "waiting" items in inbox.md: non-empty lines that are NOT markdown
+// headings (don't start with "#"). Returns 0 if the file doesn't exist yet.
+export async function fetchInboxCount(conn) {
+  if (!conn.token) return 0;
+  const cur = await getFileRaw(conn, "inbox.md");
+  if (!cur) return 0;
+  return cur.text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).length;
+}
+
+// Write (or replace) a `process-request` marker at the repo root — same PUT/commit
+// mechanism as inbox writes. The brain processor honours this on its next run and
+// clears it. Content is a short stamp the processor can log/ignore.
+export async function requestProcess(conn, content) {
+  if (!conn.token) throw new Error("Not connected");
+  const cur = await getFileRaw(conn, "process-request");
+  return putFile(conn, "process-request", content, cur?.sha, "app: process-request");
+}
+
 // --- normalisation ----------------------------------------------------------
 
 // Turn a graph.json object (the brief's section-3 shape, with optional `summary`

@@ -1,8 +1,8 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText } from "lucide-react";
-import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play } from "lucide-react";
+import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxCount, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
 // Shown out of the box and whenever no token is connected. Once the user
@@ -152,6 +152,8 @@ export default function App() {
   const [types,setTypes]=useState(()=>lsGetJSON("sb_types",{}));   // local convert overrides: id -> type
   const [snoozes,setSnoozes]=useState(()=>lsGetJSON("sb_snooze",{})); // local snoozes: id -> until ISO
   const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
+  const [inboxCount,setInboxCount]=useState(()=>lsGetJSON("sb_inbox",0)); // raw items waiting in inbox.md
+  const [showProcess,setShowProcess]=useState(false);            // inbox/process sheet
 
   const norm=useMemo(()=>normalize(graph),[graph]);
 
@@ -182,8 +184,15 @@ export default function App() {
       setStatus({state:"error", msg:e.message||String(e)});
     }
   }
-  // On launch: if connected, refresh in the background (the mirror already shows instantly).
-  useEffect(()=>{ if(conn.token) refresh(conn); },[]); // eslint-disable-line
+  // Pull the live inbox.md waiting-count and mirror it for instant/offline load.
+  // Demo / disconnected → 0. Errors are swallowed (keep the last mirrored value).
+  async function refreshInbox(c=conn){
+    if(!c.token){ setInboxCount(0); lsSetJSON("sb_inbox",0); return; }
+    try{ const n=await fetchInboxCount(c); setInboxCount(n); lsSetJSON("sb_inbox",n); }catch{}
+  }
+  // On launch: if connected, refresh graph + inbox count in the background
+  // (the mirrors already show instantly).
+  useEffect(()=>{ if(conn.token){ refresh(conn); refreshInbox(conn); } },[]); // eslint-disable-line
 
   // Outbox flush. Single-flight: only ONE flush runs at a time; actions that fire
   // mid-flush just enqueue and the running loop picks them up. Each pass:
@@ -230,12 +239,13 @@ export default function App() {
   function openSettings(){ setForm({ token:conn.token, owner:conn.owner, repo:conn.repo, branch:conn.branch }); setShowSettings(true); }
   function saveSettings(){
     const c={ token:(form.token||"").trim(), owner:(form.owner||"").trim()||DEFAULT_CONN.owner, repo:(form.repo||"").trim()||DEFAULT_CONN.repo, branch:(form.branch||"").trim()||DEFAULT_CONN.branch };
-    saveConn(c); setConn(c); setShowSettings(false); refresh(c);
+    saveConn(c); setConn(c); setShowSettings(false); refresh(c); refreshInbox(c);
   }
   function doDisconnect(){
     repoDisconnect();
     const c={ ...conn, token:"" }; setConn(c);
     setGraph(SAMPLE_GRAPH); setStatus({state:"demo"}); setShowSettings(false);
+    setInboxCount(0); lsSetJSON("sb_inbox",0);
   }
 
   const today=()=>new Date().toISOString().slice(0,10);
@@ -323,6 +333,7 @@ export default function App() {
     setCaptures(next);persist("sb_cap",next);setDraft("");
     if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
     enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
+    setInboxCount(n=>{ const v=n+1; lsSetJSON("sb_inbox",v); return v; });   // optimistic +1 (a refetch would lag the write)
     showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
   };
 
@@ -487,14 +498,24 @@ export default function App() {
   const sCount={open:0,snoozed:0,resolved:0};
   Object.keys(norm.dec).forEach(id=>{ if(itemFilter!=="all" && effType(id)!==itemFilter) return; sCount[statusOf(id)]++; });
 
-  // PROCESS-SAFETY GUARD: only safe to run the inbox processor once everything is
+  // PROCESS-SAFETY GUARD: only safe to request a processing pass once everything is
   // synced (else the processor won't see still-queued actions and items can briefly
-  // reappear as open until they sync and you reprocess). There is no in-app
-  // "Process now" trigger today (processing runs in Claude Code), so the guard
-  // surfaces as the amber "N pending sync" indicator in the BRAIN strip. If a
-  // process trigger is ever added, gate it on `canProcess` and, while false, show
-  // "Finish syncing before processing — N pending".
+  // reappear as open until they sync and you reprocess). The "Process now" button is
+  // gated on `canProcess`; while false the sheet says "Finish syncing first — N pending"
+  // and the amber "N pending sync" indicator stays in the BRAIN strip.
   const canProcess = outbox.length===0 && !syncing;
+
+  // Request a processing pass: drop a `process-request` marker the brain processor
+  // honours on its next SessionStart. Demo (no token) → explainer toast, no write.
+  async function processNow(){
+    if(!conn.token){ showToast("Connect your brain to process — it runs in your processor."); setShowProcess(false); return; }
+    if(!canProcess){ showToast(`Finish syncing first — ${outbox.length} pending`); return; }
+    try{
+      await requestProcess(conn, `${new Date().toISOString()}\nsource: app\n`);
+      setShowProcess(false);
+      showToast("Process requested — open your brain processor and it'll run, then clear this.");
+    }catch(e){ showToast(`Couldn't request — ${e.message||e}`); }
+  }
 
   // Sync indicator (BRAIN strip): syncing… / N failed — tap to retry / N pending sync.
   const failedCount=outbox.filter(it=>it.failed).length;
@@ -566,7 +587,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span> · <span onClick={(e)=>{e.stopPropagation(); setShowProcess(true);}} className="tap" style={{color:inboxCount>0?"#F5B344":"#5C678C",fontWeight:inboxCount>0?600:500}}>{inboxCount} in inbox</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>
@@ -649,6 +670,25 @@ export default function App() {
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
           {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={null} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)}
+        </div>
+      )}
+
+      {showProcess&&(
+        <div className="sheet" style={{zIndex:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span className="disp" style={{fontSize:18,fontWeight:700,display:"flex",alignItems:"center",gap:8}}><Inbox size={18} color="#F5B344"/> Inbox</span>
+            <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
+          </div>
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:4}}>
+            <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting.
+          </div>
+          <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:16}}>
+            {conn.token
+              ? "Processing reads inbox.md, folds these into your cards, and clears the inbox. It runs in your brain processor — this just asks it to."
+              : "Connect your brain to capture and process. In demo mode nothing is written."}
+          </div>
+          <button onClick={processNow} disabled={!!conn.token&&!canProcess} className="tap" style={{width:"100%",background:(!!conn.token&&!canProcess)?"#2A3556":"#8B7CFF",color:(!!conn.token&&!canProcess)?"#6B7494":"#0E1424",border:"none",borderRadius:11,padding:"12px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6,cursor:(!!conn.token&&!canProcess)?"default":"pointer"}}><Play size={15}/> Process now</button>
+          {!!conn.token&&!canProcess&&<div className="mono" style={{fontSize:10.5,color:"#F5B344",textAlign:"center",marginTop:10}}>Finish syncing first — {outbox.length} pending</div>}
         </div>
       )}
 
