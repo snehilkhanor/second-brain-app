@@ -158,6 +158,7 @@ export default function App() {
   const norm=useMemo(()=>normalize(graph),[graph]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
+  const lastProcessedRef=useRef(lsGetJSON("sb_lp",null)); // last-seen stats.lines_processed (for the reward toast)
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
   useEffect(()=>{ setCardOpen(false); },[selected]);   // collapse "full card" when switching nodes
@@ -179,9 +180,24 @@ export default function App() {
     try{
       const { graph:g } = await fetchGraphJson(c);
       setGraph(g); saveMirror(g);
+      reconcileProcessing(g);
       setStatus({state:"ok", at:Date.now()});
     }catch(e){
       setStatus({state:"error", msg:e.message||String(e)});
+    }
+  }
+  // PROCESSING REWARD: stats.lines_processed is cumulative inbox lines the processor
+  // has cleared. On each fresh graph.json, if it grew since we last saw it, toast the
+  // delta and the momentum it earned. First sighting just sets the baseline (no toast,
+  // so reconnecting/old data never fires a spurious reward).
+  function reconcileProcessing(g){
+    const lp = (g && g.stats && Number(g.stats.lines_processed)) || 0;
+    const prev = lastProcessedRef.current;
+    if(prev==null){ lastProcessedRef.current=lp; lsSetJSON("sb_lp",lp); return; }
+    if(lp>prev){
+      const delta=lp-prev;
+      showToast(`Processed ${delta} item${delta===1?"":"s"} · +${delta*4} momentum`);
+      lastProcessedRef.current=lp; lsSetJSON("sb_lp",lp);
     }
   }
   // Pull the live inbox.md waiting-count and mirror it for instant/offline load.
@@ -276,10 +292,11 @@ export default function App() {
   },[norm,resolved,snoozes,todayStr]); // eslint-disable-line
   useEffect(()=>{ openCountRef.current=openCountByNode; },[openCountByNode]);
 
-  // Momentum: entity*2 + connection*3 + decision_resolved*30 + task_done*50 + capture*4
+  // Momentum: entity*2 + connection*3 + decision_resolved*30 + task_done*50 + capture*8 + lines_processed*4
   let decResolved=0, taskDone=0;
   Object.keys(resolved).forEach(id=>{ effType(id)==="task" ? taskDone++ : decResolved++; });
-  const momentum=norm.nodes.length*2+norm.links.length*3+decResolved*30+taskDone*50+captureCount*4;
+  const linesProcessed=(graph && graph.stats && Number(graph.stats.lines_processed)) || 0;
+  const momentum=norm.nodes.length*2+norm.links.length*3+decResolved*30+taskDone*50+captureCount*8+linesProcessed*4;
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
@@ -633,10 +650,11 @@ export default function App() {
             </div>
           </div>
           <div style={{height:6,background:"#0E1424",borderRadius:99,marginTop:12,overflow:"hidden"}}><div style={{width:`${pct}%`,height:"100%",background:"linear-gradient(90deg,#F5B344,#8B7CFF)",borderRadius:99,transition:"width .4s"}}/></div>
-          <div style={{display:"flex",gap:14,marginTop:14}}>
+          <div style={{display:"flex",gap:12,rowGap:10,marginTop:14,flexWrap:"wrap"}}>
             <Stat icon={<Sparkles size={13}/>} v={resolvedCount} l="resolved" c="#5BD6A8"/>
             <Stat icon={<Zap size={13}/>} v={captureCount} l="captured" c="#F5B344"/>
             <Stat icon={<AlertTriangle size={13}/>} v={openCountTotal} l="open" c="#8B7CFF"/>
+            <Stat icon={<Inbox size={13}/>} v={linesProcessed} l="processed" c="#79C0FF"/>
           </div>
         </div>
 
