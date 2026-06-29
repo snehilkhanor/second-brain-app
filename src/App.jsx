@@ -655,10 +655,6 @@ export default function App() {
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
           <button className="conn" onClick={doRefresh} title="Refresh" aria-label="Refresh" style={{color:"#8A94B0",padding:"6px 9px"}}><RefreshCw size={16} className={status.state==="loading"?"spin":""}/></button>
-          <div className="seg">
-            <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")} title="Glow" aria-label="Glow" style={{display:"flex",alignItems:"center"}}><Sparkles size={15}/></button>
-            <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")} title="Badge" aria-label="Badge" style={{display:"flex",alignItems:"center"}}><Hash size={15}/></button>
-          </div>
         </div>
       </div>
 
@@ -681,6 +677,10 @@ export default function App() {
             <span><span className="dot" style={{background:"#5BD6A8"}}/>people</span>
             <span><span className="dot" style={{background:"#6B7494"}}/>rivals</span>
           </div>
+        </div>
+        <div className="seg" style={{position:"absolute",top:12,right:14,zIndex:3}}>
+          <button className={mode==="glow"?"on":""} onClick={()=>setMode("glow")} title="Glow" aria-label="Glow" style={{display:"flex",alignItems:"center"}}><Sparkles size={15}/></button>
+          <button className={mode==="badge"?"on":""} onClick={()=>setMode("badge")} title="Badge" aria-label="Badge" style={{display:"flex",alignItems:"center"}}><Hash size={15}/></button>
         </div>
         <div ref={mountRef} style={{position:"absolute",inset:0}}/>
         {!selected&&<div className="mono" style={{position:"absolute",bottom:10,left:0,right:0,textAlign:"center",fontSize:10,color:"#5C678C",pointerEvents:"none"}}>drag · pinch · tap a node · {mode==="glow"?"amber glow = open decisions":"badge = # open decisions"}</div>}
