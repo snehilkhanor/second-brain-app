@@ -707,9 +707,10 @@ export default function App() {
             <span className="disp" style={{fontSize:18,fontWeight:700,display:"flex",alignItems:"center",gap:8}}><Inbox size={18} color="#F5B344"/> Inbox</span>
             <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
-          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:8}}>
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:inboxCount>0?4:8}}>
             <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
           </div>
+          {inboxCount>0&&<div className="mono" style={{fontSize:11,color:"#F5B344",marginBottom:10}}>~+{inboxCount*4} momentum when you process</div>}
           {inboxCount>0
             ? <div style={{maxHeight:230,overflowY:"auto",background:"#F5F5F0",borderRadius:12,marginBottom:14}}>
                 {inboxList.map((line,i)=>(
