@@ -707,10 +707,9 @@ export default function App() {
             <span className="disp" style={{fontSize:18,fontWeight:700,display:"flex",alignItems:"center",gap:8}}><Inbox size={18} color="#F5B344"/> Inbox</span>
             <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
-          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:inboxCount>0?4:8}}>
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:8}}>
             <b style={{color:"#F5B344"}}>{inboxCount}</b> raw item{inboxCount===1?"":"s"} waiting{conn.token?"":" (demo · your captures)"}.
           </div>
-          {inboxCount>0&&<div className="mono" style={{fontSize:11,color:"#F5B344",marginBottom:10}}>~+{inboxCount*4} momentum when you process</div>}
           {inboxCount>0
             ? <div style={{maxHeight:230,overflowY:"auto",background:"#F5F5F0",borderRadius:12,marginBottom:14}}>
                 {inboxList.map((line,i)=>(
@@ -726,6 +725,7 @@ export default function App() {
               ? "Processing reads inbox.md, folds these into your cards, and clears the inbox. It runs in your brain processor — this just asks it to."
               : "Connect your brain to capture and process. In demo mode nothing is written."}
           </div>
+          {inboxCount>0&&<div className="mono" style={{fontSize:11,color:"#F5B344",textAlign:"center",marginBottom:8}}>~+{inboxCount*4} momentum when you process</div>}
           <button onClick={processNow} disabled={!!conn.token&&!canProcess} className="tap" style={{width:"100%",background:(!!conn.token&&!canProcess)?"#2A3556":"#8B7CFF",color:(!!conn.token&&!canProcess)?"#6B7494":"#0E1424",border:"none",borderRadius:11,padding:"12px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",gap:6,cursor:(!!conn.token&&!canProcess)?"default":"pointer"}}><Play size={15}/> Process now</button>
           {!!conn.token&&!canProcess&&<div className="mono" style={{fontSize:10.5,color:"#F5B344",textAlign:"center",marginTop:10}}>Finish syncing first — {outbox.length} pending</div>}
         </div>
