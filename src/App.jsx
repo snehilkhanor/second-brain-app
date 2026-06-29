@@ -82,6 +82,26 @@ const SAMPLE_GRAPH = (() => {
     nodes: NODES.map(n=>({ id:n.id, label:n.label, type:n.kind, summary:SUMMARY[n.id]||"", connections:deg[n.id]||0, open_decisions:openByNode[n.id]||0, card:demoCard(n) })),
     links: LINKS.map(([source,target,label])=>({ source, target, label })),
     open_decisions: Object.entries(DEC).map(([id,d])=>({ id, entity:d.node, text:d.text, type:d.type||"decision", flagged:!!d.flagged, status:"open", snooze_until:null })),
+    // Demo PARA block. Project/Area ids reuse entity ids that already own demo
+    // decisions (thirdman, trulymadly, madlabs) so their card panels show real,
+    // resolvable open items; "finance" has none → shows the "clear" state.
+    para: {
+      projects: [
+        { id:"thirdman", label:"ThirdMan launch", open:2, done:5, body:"# ThirdMan launch\n\nGet the AI+human EA to the first paying CXOs.\n\n## Notes\n- pricing fork still open\n- pick the AI primitives reliable enough today" },
+        { id:"trulymadly", label:"TrulyMadly 40+ premium", open:3, done:8, body:"# TrulyMadly 40+ premium\n\nShip the 40+ premium tier.\n\n- unified packaging: Select / Select Plus / VIP\n- naming test pending on real 40+ users" },
+      ],
+      areas: [
+        { id:"madlabs", label:"Mad Labs studio", open:1, done:4, body:"# Mad Labs studio\n\nThe lab is the product — keep the pipeline healthy.\n\n- incubate vs build vs partner\n- fundraising path" },
+        { id:"finance", label:"Personal finance", open:0, done:3, body:"# Personal finance\n\nHousehold money ops — nothing open right now." },
+      ],
+      resources: [
+        { id:"ai-prompts", label:"AI prompt library", count:14, body:"# AI prompt library\n\n- cold-open hooks\n- pricing teardown\n- interview loop" },
+        { id:"rival-notes", label:"Competitor notes", count:9, body:"# Competitor notes\n\n- faff — flat fee, weak context\n- crew — Swiggy concierge\n- hulp — Delhi NCR PA pod" },
+      ],
+      archive: [
+        { id:"unshaadi-launch", label:"Unshaadi launch", open:0, done:12, body:"# Unshaadi launch\n\nShipped and wound down. Archived for reference." },
+      ],
+    },
   };
 })();
 
@@ -154,14 +174,20 @@ export default function App() {
   const [cardOpen,setCardOpen]=useState(false);                  // "view full card" toggle
   const [inboxItems,setInboxItems]=useState(()=>{ const v=lsGetJSON("sb_inbox",[]); return Array.isArray(v)?v:[]; }); // raw waiting lines from inbox.md
   const [showProcess,setShowProcess]=useState(false);            // inbox/process sheet
+  const [dashView,setDashView]=useState("items");                // dashboard tab: items | para
+  const [paraCard,setParaCard]=useState(null);                   // open PARA card panel (entry object)
+  const [paraBodyOpen,setParaBodyOpen]=useState(false);          // "view full card" toggle in the PARA panel
 
   const norm=useMemo(()=>normalize(graph),[graph]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const lastProcessedRef=useRef(lsGetJSON("sb_lp",null)); // last-seen stats.lines_processed (for the reward toast)
+  const dashDefaulted=useRef(false), dashTouched=useRef(false); // dashboard-tab default-once + manual-override flags
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
-  useEffect(()=>{ setCardOpen(false); },[selected]);   // collapse "full card" when switching nodes
+  useEffect(()=>{ setCardOpen(false); if(selected) setParaCard(null); },[selected]); // collapse "full card"; close PARA panel when a node is selected
+  useEffect(()=>{ setParaBodyOpen(false); },[paraCard]); // collapse the PARA "full card" when switching cards
+  const pickView=(v)=>{ dashTouched.current=true; setDashView(v); }; // manual tab tap sticks for the session
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
   // Update the ref synchronously so flushOutbox(), called right after, sees the
@@ -285,6 +311,13 @@ export default function App() {
 
   const resolvedCount=Object.keys(resolved).length, captureCount=captures.length;
   const openCountTotal=Object.keys(norm.dec).filter(isActiveOpen).length;
+  // DEFAULT TAB (once, on load): nothing open → land on PARA; otherwise Items. A manual
+  // tab tap sets dashTouched and this never fires again for the session.
+  useEffect(()=>{
+    if(dashTouched.current || dashDefaulted.current) return;
+    dashDefaulted.current=true;
+    setDashView(openCountTotal===0 ? "para" : "items");
+  },[openCountTotal]); // eslint-disable-line
   // Inbox preview: real waiting lines from inbox.md when connected; in demo there's
   // no remote inbox, so show the local captured thoughts (newest last, file order).
   const inboxList = conn.token ? inboxItems : captures.map(c=>c.t).slice().reverse();
@@ -510,6 +543,9 @@ export default function App() {
   const node=selected?norm.nodes.find(n=>n.id===selected):null;
   const neighbors=selected?norm.links.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:norm.name[o]};}):[];
   const nodeDecs=selected?(norm.decsByNode[selected]||[]).filter(id=>!isSnoozedFuture(id)).map(id=>({id,...norm.dec[id]})):[];
+  // PARA card panel: its open items are the open_decisions linked by entity == card.id
+  // (same link the 3D nodes use), so we reuse decsByNode and the existing resolve flow.
+  const paraDecs=paraCard?(norm.decsByNode[paraCard.id]||[]).filter(id=>!isSnoozedFuture(id)).map(id=>({id,...norm.dec[id]})):[];
   // The list shows ONE status bucket at a time (Open / Snoozed / Resolved), then
   // the TYPE filter narrows that bucket. Flagged items float to the top.
   const allDecs=Object.entries(norm.dec).map(([id,v])=>({id,...v}))
@@ -665,6 +701,12 @@ export default function App() {
           </div>
         </div>
 
+        <div className="seg" style={{marginBottom:13,width:"fit-content"}}>
+          <button className={dashView==="items"?"on":""} onClick={()=>pickView("items")}>Items</button>
+          <button className={dashView==="para"?"on":""} onClick={()=>pickView("para")}>PARA</button>
+        </div>
+
+        {dashView==="items"&&(
         <div className="card" style={{padding:16}}>
           <div style={{marginBottom:10}}><span className="disp" style={{fontWeight:600,fontSize:14}}>Items</span></div>
           <div className="tabs" style={{marginBottom:12,borderBottom:"1px solid #1B2440"}}>
@@ -681,6 +723,10 @@ export default function App() {
           {allDecs.length===0&&<div className="mono" style={{fontSize:11,color:"#5C678C",padding:"8px 0"}}>nothing {statusFilter==="open"?"open":statusFilter} here</div>}
           {allDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={isSnoozedFuture(d.id)?snoozeUntil(d.id):null} itemType={effType(d.id)} nameMap={norm.name}/>)}
         </div>
+        )}
+
+        {dashView==="para"&&<ParaView para={norm.para} onOpen={(e)=>{setSelected(null);setParaCard(e);}}/>}
+
         <div className="mono" style={{fontSize:10,color:"#4F587A",textAlign:"center",marginTop:6}}>single source of truth: the brain repo · {conn.token?`${conn.owner}/${conn.repo}`:"not connected"}</div>
       </div>
 
@@ -705,6 +751,29 @@ export default function App() {
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
           </div>
           {nodeDecs.length>0&&(<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{nodeDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={null} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)}
+        </div>
+      )}
+
+      {paraCard&&(
+        <div className="sheet">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:9,flexWrap:"wrap"}}>
+              <span className="disp" style={{fontSize:20,fontWeight:700}}>{paraCard.label}</span>
+              <span className="chip" style={{background:"#8B7CFF22",color:"#8B7CFF"}}>{paraCard._kind||"Card"}</span>
+              {paraCard._resources
+                ? <span className="mono" style={{fontSize:10,color:"#8A94B0"}}>{paraCard.count||0} ideas</span>
+                : <span className="chip" style={(paraCard.open||0)>0?{background:"#F5B34422",color:"#F5B344"}:{background:"#5BD6A822",color:"#5BD6A8"}}>{(paraCard.open||0)>0?`${paraCard.open} open`:"clear"}</span>}
+            </div>
+            <button onClick={()=>setParaCard(null)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
+          </div>
+          <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{bodySummary(paraCard.body)||<span style={{color:"#6B7494"}}>No summary yet.</span>}</div>
+          {paraCard.body&&(<div style={{marginBottom:16}}>
+            <button onClick={()=>setParaBodyOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {paraBodyOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:paraBodyOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
+            {paraBodyOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(paraCard.body)}}/>}
+          </div>)}
+          {paraDecs.length>0
+            ? (<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{paraDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={null} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)
+            : <div className="mono" style={{fontSize:11,color:"#6B7494"}}>No open items on this card.</div>}
         </div>
       )}
 
@@ -772,6 +841,63 @@ export default function App() {
   );
 }
 function Stat({icon,v,l,c}){return(<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{color:c}}>{icon}</span><span className="mono" style={{fontSize:15,fontWeight:700}}>{v}</span><span className="mono" style={{fontSize:10,color:"#8A94B0"}}>{l}</span></div>);}
+
+// First non-empty, non-heading line of a card body → a one-line summary for the panel.
+function bodySummary(body){
+  for(const raw of (body||"").split("\n")){
+    const l=raw.trim();
+    if(!l || /^#{1,6}\s/.test(l)) continue;
+    return l.replace(/^[-*]\s+/,"").slice(0,200);
+  }
+  return "";
+}
+
+// PARA dashboard view. Four sections in fixed order; Projects most prominent, Areas next,
+// Resources quieter, Archive hidden when empty. Rows reuse the card styling; tapping a row
+// opens the card panel (onOpen). Open/done counts come from the para entry ints; a card's
+// open items themselves live in open_decisions (handled by the panel).
+function ParaView({para,onOpen}){
+  const sections=[
+    {key:"projects",title:"Projects",kind:"Project",accent:"#F5B344",labelColor:"#E8ECF7",op:1},
+    {key:"areas",title:"Areas",kind:"Area",accent:"#8B7CFF",labelColor:"#E8ECF7",op:1},
+    {key:"resources",title:"Resources",kind:"Resource",accent:"#6B7494",labelColor:"#C3CAE0",op:0.95,resources:true},
+    {key:"archive",title:"Archive",kind:"Archive",accent:"#4F587A",labelColor:"#AEB7D4",op:0.66,hideEmpty:true},
+  ];
+  return (
+    <div>
+      {sections.map(s=>{
+        const list=Array.isArray(para?.[s.key])?para[s.key]:[];
+        if(s.hideEmpty && list.length===0) return null;
+        return (
+          <div key={s.key} style={{marginBottom:16}}>
+            <div className="mono" style={{fontSize:10,letterSpacing:".08em",color:s.accent,marginBottom:8,textTransform:"uppercase"}}>{s.title}{list.length?` · ${list.length}`:""}</div>
+            {list.length===0
+              ? <div className="mono" style={{fontSize:11,color:"#5C678C"}}>none yet</div>
+              : list.map(e=><ParaRow key={e.id} e={e} labelColor={s.labelColor} op={s.op} resources={!!s.resources} onOpen={()=>onOpen({...e,_kind:s.kind,_resources:!!s.resources})}/>)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ParaRow({e,labelColor,op,resources,onOpen}){
+  const open=e.open||0, done=e.done||0, total=open+done;
+  return (
+    <button onClick={onOpen} className="card tap" style={{display:"block",width:"100%",textAlign:"left",fontFamily:"inherit",padding:"11px 13px",marginBottom:9,opacity:op}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+        <span style={{fontSize:13.5,fontWeight:600,color:labelColor}}>{e.label}</span>
+        {resources
+          ? <span className="mono" style={{fontSize:10,color:"#8A94B0",flexShrink:0}}>{e.count||0} ideas</span>
+          : <span className="chip" style={open>0?{background:"#F5B34422",color:"#F5B344",flexShrink:0}:{background:"#5BD6A822",color:"#5BD6A8",flexShrink:0}}>{open>0?`${open} open`:"clear"}</span>}
+      </div>
+      {!resources && total>0 && (<div style={{marginTop:8}}>
+        <div style={{height:4,background:"#0E1424",borderRadius:99,overflow:"hidden"}}><div style={{width:`${Math.round(done/total*100)}%`,height:"100%",background:"#5BD6A8",borderRadius:99}}/></div>
+        <div className="mono" style={{fontSize:9.5,color:"#6B7494",marginTop:4}}>{open} open · {done} done</div>
+      </div>)}
+    </button>
+  );
+}
 
 // Module-scope (stable identity) so typing in the outcome box doesn't remount
 // the textarea and drop focus / dismiss the keyboard.

@@ -225,7 +225,19 @@ export function normalize(g) {
   const decsByNode = {};
   Object.entries(dec).forEach(([id, v]) => { (decsByNode[v.node] = decsByNode[v.node] || []).push(id); });
 
-  return { nodes, links, name, summary, dec, decsByNode };
+  // PARA block (Projects/Areas/Resources/Archive). Pass through as-is; a card's open
+  // items are NOT embedded here — they live in open_decisions[] linked by entity == id,
+  // so the UI reuses decsByNode[id]. Each entry: { id, label, open, done, body }
+  // (resources also carry { count }). Default every section to an array.
+  const p = (g && typeof g.para === "object" && g.para) ? g.para : {};
+  const para = {
+    projects: Array.isArray(p.projects) ? p.projects : [],
+    areas: Array.isArray(p.areas) ? p.areas : [],
+    resources: Array.isArray(p.resources) ? p.resources : [],
+    archive: Array.isArray(p.archive) ? p.archive : [],
+  };
+
+  return { nodes, links, name, summary, dec, decsByNode, para };
 }
 
 // The engine wants graph.json node/link shape with `connections` for sizing.
