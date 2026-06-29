@@ -102,6 +102,31 @@ function badgeSprite(n){
   s.scale.set(9,9,1); s.userData={count:n}; return s;
 }
 
+// Collapse redundant queued actions on the same item before writing:
+//  - resolve/snooze are terminal — the LAST one supersedes every earlier action
+//    on that item (earlier converts/snoozes are dropped).
+//  - converts with no terminal cancel in pairs — keep one only if the count is
+//    odd (the last convert carries the net final type); an even count writes
+//    nothing. (e.g. convert→task then convert→decision == no convert line.)
+// Captures and any untargeted items are always kept, in order. Returns the items
+// to actually write (in original order); the rest are no-ops to drop.
+function collapseOutbox(queue){
+  const keep=new Array(queue.length).fill(false);
+  const groups=new Map();
+  queue.forEach((it,i)=>{
+    if(!it.target){ keep[i]=true; return; }
+    if(!groups.has(it.target)) groups.set(it.target,[]);
+    groups.get(it.target).push(i);
+  });
+  for(const idxs of groups.values()){
+    let lastTerminal=-1;
+    idxs.forEach((qi,k)=>{ const knd=queue[qi].kind; if(knd==="resolved"||knd==="snooze") lastTerminal=k; });
+    if(lastTerminal>=0) keep[idxs[lastTerminal]]=true;        // terminal supersedes earlier actions
+    else if(idxs.length%2===1) keep[idxs[idxs.length-1]]=true; // odd # of converts → net one; even → none
+  }
+  return queue.filter((_,i)=>keep[i]);
+}
+
 export default function App() {
   const mountRef=useRef(null);
   const [mode,setMode]=useState("glow");          // glow | badge
@@ -131,7 +156,7 @@ export default function App() {
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
-  const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({});
+  const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
   useEffect(()=>{ setCardOpen(false); },[selected]);   // collapse "full card" when switching nodes
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
@@ -159,26 +184,40 @@ export default function App() {
   // On launch: if connected, refresh in the background (the mirror already shows instantly).
   useEffect(()=>{ if(conn.token) refresh(conn); },[]); // eslint-disable-line
 
-  // Outbox: append queued writes to inbox.md one-by-one, in order. A write that
-  // fails (e.g. no signal) stays queued and is retried later — a thought is
-  // never lost. Sequential, because each append reads-then-writes the file.
-  // Single-flight: only ONE flush runs at a time. Actions that fire mid-flush
-  // just enqueue (outboxRef grows) and the running loop drains them — we never
-  // start a second concurrent flush, so no two appends race on the same sha.
+  // Outbox flush. Single-flight: only ONE flush runs at a time; actions that fire
+  // mid-flush just enqueue and the running loop picks them up. Each pass:
+  //  - collapses redundant same-item actions to their NET result,
+  //  - drops the no-op items immediately,
+  //  - writes the remaining distinct lines in ONE batched commit,
+  //  - on a confirmed 2xx removes them; on terminal failure (retries exhausted)
+  //    marks them "failed" so we stop retrying silently — the user can tap retry.
+  // Items never silently vanish: written only on 2xx, otherwise queued or failed.
   async function flushOutbox(c=conn){
     if(flushing.current || !c.token || !navigator.onLine) return;
     flushing.current=true; setSyncing(true);
     try{
-      // Strictly sequential. Re-read the live queue each pass so items enqueued
-      // mid-flush are caught. appendToInbox re-fetches the sha right before each
-      // PUT and retries on 409/422; an item is removed only on a confirmed 2xx.
-      while(outboxRef.current.length){
-        const item=outboxRef.current[0];
-        try{ await appendToInbox(c, item.line, item.message); setOutboxP(outboxRef.current.slice(1)); }
-        catch(e){ break; }   // leave this + the rest queued, in order; retry on launch/online/sync-now
+      while(true){
+        const q=outboxRef.current;
+        const pending=q.filter(it=>!it.failed);            // skip items already marked failed
+        if(!pending.length) break;
+        const kept=collapseOutbox(pending);                // net actions to actually write
+        const keptIds=new Set(kept.map(it=>it.id));
+        const dropIds=new Set(pending.filter(it=>!keptIds.has(it.id)).map(it=>it.id)); // cancelled/superseded no-ops
+        if(dropIds.size) setOutboxP(outboxRef.current.filter(it=>!dropIds.has(it.id)));
+        if(!kept.length) continue;
+        try{
+          await appendToInbox(c, kept.map(it=>it.line), `app: sync (${kept.length})`);   // ONE batched commit
+          setOutboxP(outboxRef.current.filter(it=>!keptIds.has(it.id)));                  // confirmed 2xx → remove
+        }catch(e){
+          const tag=e.status?`HTTP ${e.status}`:String(e.message||e);
+          setOutboxP(outboxRef.current.map(it=> keptIds.has(it.id) ? {...it,failed:true,err:tag} : it)); // surface stall
+          break;
+        }
       }
-    } finally { flushing.current=false; setSyncing(false); }   // queued count + sync state refresh reactively
+    } finally { flushing.current=false; setSyncing(false); }
   }
+  // Clear failed flags and try again (used by the "tap to retry" affordance).
+  const retryFailed=()=>{ setOutboxP(outboxRef.current.map(it=> it.failed ? {...it,failed:false,err:undefined} : it)); flushOutbox(); };
   // Flush on launch and whenever the device comes back online.
   useEffect(()=>{
     const onOnline=()=>flushOutbox();
@@ -226,7 +265,14 @@ export default function App() {
   const level=Math.floor(momentum/60)+1, intoLevel=momentum%60, pct=Math.round(intoLevel/60*100);
 
   const showToast=(msg,undo)=>{setToast({msg,undo}); setTimeout(()=>setToast(null),4000);};
-  const enqueue=(item)=>{ const q=[...outboxRef.current,item]; setOutboxP(q); flushOutbox(); };
+  // Enqueue + a short trailing debounce: a burst of actions coalesces into one
+  // flush so same-item actions can collapse and distinct lines can batch, instead
+  // of the first action writing alone. (Launch/online/sync-now/retry flush now.)
+  const enqueue=(item)=>{
+    setOutboxP([...outboxRef.current,item]);
+    if(flushTimer.current) clearTimeout(flushTimer.current);
+    flushTimer.current=setTimeout(()=>{ flushTimer.current=null; flushOutbox(); }, 300);
+  };
 
   // Resolve a decision: instant local glow/badge drop, then append a structured
   // resolved: line to inbox.md. The real card rewrite happens later in processing.
@@ -234,7 +280,7 @@ export default function App() {
     const d=norm.dec[id]; const oc=outcome.trim();
     const next={...resolved,[id]:{ts:Date.now(),outcome:oc}};
     setResolved(next);persist("sb_res",next);setOpenDec(null);setOutcome("");
-    const item={id:"r_"+id, kind:"resolved", ts:Date.now(), message:"app: resolve decision",
+    const item={id:"r_"+id, target:id, kind:"resolved", ts:Date.now(), message:"app: resolve decision",
       line:`resolved: [[${d?.node}]] | "${d?.text}" → ${oc||"resolved"} | ${today()}`};
     if(conn.token) enqueue(item);
     showToast(conn.token?"Resolved + 30":"Resolved + 30 (demo)",()=>{
@@ -259,7 +305,7 @@ export default function App() {
     const d=norm.dec[id]; if(!d) return;
     const nextType=effType(id)==="task"?"decision":"task";
     const nt={...types,[id]:nextType}; setTypes(nt); persist("sb_types",nt);
-    if(conn.token) enqueue({id:"v_"+id+"_"+Date.now(), kind:"convert", ts:Date.now(), message:"app: convert",
+    if(conn.token) enqueue({id:"v_"+id+"_"+Date.now(), target:id, kind:"convert", ts:Date.now(), message:"app: convert",
       line:`convert: [[${d.node}]] | "${d.text}" → ${nextType} | ${today()}`});
     showToast(`Now a ${nextType}${conn.token?"":" (demo)"}`);
   };
@@ -268,7 +314,7 @@ export default function App() {
   const snooze=(id,until)=>{
     const d=norm.dec[id]; if(!d||!until) return;
     const ns={...snoozes,[id]:until}; setSnoozes(ns); persist("sb_snooze",ns); setOpenDec(null);
-    if(conn.token) enqueue({id:"s_"+id+"_"+Date.now(), kind:"snooze", ts:Date.now(), message:"app: snooze",
+    if(conn.token) enqueue({id:"s_"+id+"_"+Date.now(), target:id, kind:"snooze", ts:Date.now(), message:"app: snooze",
       line:`snooze: [[${d.node}]] | "${d.text}" → until ${until} | ${today()}`});
     showToast(`Snoozed to ${until}${conn.token?"":" (demo)"}`);
   };
@@ -406,6 +452,15 @@ export default function App() {
   // "Finish syncing before processing — N pending".
   const canProcess = outbox.length===0 && !syncing;
 
+  // Sync indicator (BRAIN strip): syncing… / N failed — tap to retry / N pending sync.
+  const failedCount=outbox.filter(it=>it.failed).length;
+  const pendingCount=outbox.length-failedCount;
+  const firstErr=(outbox.find(it=>it.failed)||{}).err;
+  const syncUI = syncing ? {txt:"syncing…", color:"#F5B344", onTap:null}
+    : failedCount>0 ? {txt:`${failedCount} failed${firstErr?` (${firstErr})`:""} — tap to retry`, color:"#F87171", onTap:retryFailed}
+    : pendingCount>0 ? {txt:`${pendingCount} pending sync · sync now`, color:"#F5B344", onTap:()=>flushOutbox()}
+    : null;
+
   // connection status pill (header button)
   const st=status.state;
   const statusUI = st==="ok"   ? {icon:<Cloud size={16}/>, color:"#5BD6A8", label:"synced"}
@@ -462,7 +517,7 @@ export default function App() {
       </div>
 
       <div className="phead" onClick={()=>setBrainOpen(o=>!o)}>
-        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{(syncing||outbox.length>0)&&<span onClick={(e)=>{e.stopPropagation(); if(!syncing) flushOutbox();}} className="tap" style={{color:"#F5B344",fontWeight:600}}> · {syncing?"syncing…":`${outbox.length} pending sync · sync now`}</span>}</span>
+        <span className="mono" style={{fontSize:11,color:"#8A94B0"}}>BRAIN · {norm.nodes.length} nodes · <span style={{color:"#F5B344"}}>{openCountTotal} open</span>{syncUI&&<span onClick={(e)=>{e.stopPropagation(); syncUI.onTap&&syncUI.onTap();}} className="tap" style={{color:syncUI.color,fontWeight:600}}> · {syncUI.txt}</span>}</span>
         <span className="tap mono" style={{display:"flex",alignItems:"center",gap:5,color:"#8A94B0",fontSize:11}}>
           {brainOpen?"collapse":"expand"} {brainOpen?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
         </span>

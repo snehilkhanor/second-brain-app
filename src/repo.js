@@ -119,34 +119,47 @@ async function putFile({ token, owner, repo, branch }, path, text, sha, message)
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// Append ONE line to inbox.md (created if missing). Append-only; never edits
-// cards or any other file.
-//
-// Reliable under bursts: re-fetch the current sha immediately before EACH PUT
-// (never reuse a sha from earlier in the batch), and on a 409/422 sha-conflict
-// (e.g. GitHub's read-after-write lag) re-fetch and retry the SAME line with a
-// small backoff. The line is only considered written on a confirmed 2xx.
-//
-// Newlines: the existing content is normalised to end with exactly one "\n",
-// then the new line (trailing whitespace trimmed) is appended with its own
-// trailing "\n" — so every action line lands on its own line, no run-ons, no
-// double blanks.
-export async function appendToInbox(conn, line, message = "app: capture") {
-  if (!conn.token) throw new Error("Not connected");
-  const newLine = String(line).replace(/\s+$/, "") + "\n";
+// Normalise lines: each trimmed of trailing whitespace + its own single "\n".
+const joinLines = (lines) => lines.map((l) => String(l).replace(/\s+$/, "") + "\n").join("");
+
+// Append a pre-joined block (one or more newline-terminated lines) in ONE commit.
+// Re-fetch the current sha immediately before the PUT; on a 409/422 sha-conflict
+// (e.g. GitHub's read-after-write lag) re-fetch and retry with a small backoff.
+// The existing content is normalised to end with exactly one "\n" first, so lines
+// never run together and no double blanks appear. Written only on a confirmed 2xx.
+async function appendBlock(conn, block, message, maxAttempts) {
   let lastErr;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const cur = await getFileRaw(conn, "inbox.md");
-    const base = (cur ? cur.text : "").replace(/\s+$/, ""); // strip trailing blanks/newlines
-    const next = (base ? base + "\n" : "") + newLine;       // exactly one "\n" before the new line
+    const base = (cur ? cur.text : "").replace(/\s+$/, "");
+    const next = (base ? base + "\n" : "") + block;
     try {
-      return await putFile(conn, "inbox.md", next, cur?.sha, message); // 2xx = confirmed write
+      return await putFile(conn, "inbox.md", next, cur?.sha, message);
     } catch (e) {
       if (e.status === 409 || e.status === 422) { lastErr = e; await sleep(200 * (attempt + 1)); continue; }
-      throw e; // non-conflict (offline/auth/etc.) — leave it queued, bubble up
+      throw e; // non-conflict (offline/auth/etc.) — bubble up so it stays queued
     }
   }
   throw lastErr || new Error("append failed after retries");
+}
+
+// Append one line (string) or many lines (array) to inbox.md. Append-only; never
+// edits cards. Batches ALL lines into ONE commit; if the batch keeps conflicting
+// (409/422) after retries, falls back to writing each line one-at-a-time (its own
+// commit, re-reading the sha each time). Newline-terminated, no run-ons.
+export async function appendToInbox(conn, lines, message = "app: write") {
+  if (!conn.token) throw new Error("Not connected");
+  const arr = Array.isArray(lines) ? lines : [lines];
+  if (!arr.length) return;
+  try {
+    return await appendBlock(conn, joinLines(arr), message, 3);
+  } catch (e) {
+    if ((e.status === 409 || e.status === 422) && arr.length > 1) {
+      for (const l of arr) await appendBlock(conn, joinLines([l]), message, 5); // one-at-a-time fallback
+      return;
+    }
+    throw e;
+  }
 }
 
 // --- normalisation ----------------------------------------------------------
