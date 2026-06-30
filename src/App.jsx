@@ -55,8 +55,26 @@ const DEC = {
   d9:{node:"snehil", type:"decision", text:"Build a Founder's Office + Chief of Staff role."},
   d10:{node:"snehil", type:"task", text:"House purchase vs spend ceiling."},
 };
-const COL = { hub:0xF5B344, venture:0x8B7CFF, person:0x5BD6A8, org:0x5BD6A8, rival:0x6B7494 };
-const HEX = { hub:"#F5B344", venture:"#8B7CFF", person:"#5BD6A8", org:"#5BD6A8", rival:"#6B7494" };
+// Designed colours per entity kind, grouped into families that read AS families (varied
+// by treatment/brightness, not clashing hues). Unknown kinds (future processor-added) are
+// NOT listed here — they get an auto fallback colour and still appear (see kindColors()).
+const KIND_STYLE = {
+  hub:        { hex:"#F5B344" },              // gold
+  venture:    { hex:"#8B7CFF" },              // businesses — solid violet (live)
+  incubation: { hex:"#6B5FC2", ring:true },   // businesses — dimmer/outlined violet (proto-venture)
+  project:    { hex:"#5BA3F5" },              // work — bright blue
+  area:       { hex:"#4773B8" },              // work — mid blue
+  resource:   { hex:"#3C5878" },              // work — quiet blue (quietest)
+  person:     { hex:"#5BD6A8" },              // green
+  org:        { hex:"#6B7494" },              // grey
+  rival:      { hex:"#6B7494" },              // grey
+};
+// Fallback colours handed to kinds with no designed colour yet, so they're visible
+// immediately (just not hand-styled). Hand-picked to be distinct from the families above.
+const FALLBACK_PALETTE = ["#E08AD6","#56C7C0","#E0A24A","#C77FE0","#D98A6A","#7FB37F","#A0A0C8"];
+const KIND_ORDER = ["hub","venture","incubation","project","area","resource","person","org","rival"];
+const FALLBACK_HEX = "#6B7494";
+const hexInt = (hex) => parseInt(hex.slice(1), 16);
 
 // The sample brain compiled into the brief's graph.json shape (same shape the
 // real repo serves), so demo and live data flow through identical code paths.
@@ -186,9 +204,26 @@ export default function App() {
 
   const norm=useMemo(()=>normalize(graph),[graph]);
 
+  // Map of each kind PRESENT in the graph → its colour: designed colour when we have one,
+  // else an auto fallback colour. Data-driven, so a brand-new kind in graph.json is styled
+  // and shown without any app change. legendKinds orders them for display.
+  const kindColors=useMemo(()=>{
+    const present=[...new Set(norm.nodes.map(n=>n.kind))];
+    const m={};
+    present.filter(k=>KIND_STYLE[k]).forEach(k=>{ m[k]=KIND_STYLE[k]; });
+    present.filter(k=>!KIND_STYLE[k]).sort().forEach((k,i)=>{ m[k]={hex:FALLBACK_PALETTE[i%FALLBACK_PALETTE.length], fallback:true}; });
+    return m;
+  },[norm.nodes]);
+  const legendKinds=useMemo(()=>Object.keys(kindColors).sort((a,b)=>{
+    const ia=KIND_ORDER.indexOf(a), ib=KIND_ORDER.indexOf(b);
+    if(ia<0&&ib<0) return a.localeCompare(b);
+    if(ia<0) return 1; if(ib<0) return -1; return ia-ib;
+  }),[kindColors]);
+
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const lastProcessedRef=useRef(lsGetJSON("sb_lp",null)); // last-seen stats.lines_processed (for the reward toast)
   const capRef=useRef(null); // capture-sheet textarea (for focus management)
+  const kindColorRef=useRef({}); // kind -> THREE colour int, kept current for makeNode
   const dashDefaulted=useRef(false), dashTouched=useRef(false); // dashboard-tab default-once + manual-override flags
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
@@ -495,7 +530,7 @@ export default function App() {
     // One node's visual — ported verbatim from the design: glowing core sized by
     // connections, type-coloured halo, amber alert halo, label sprite, count badge.
     function makeNode(node){
-      const col=COL[node.type] ?? COL.rival;
+      const col=kindColorRef.current[node.type] ?? hexInt(FALLBACK_HEX);
       const r=4+(node.connections||1)*1.8; const ng=new THREE.Group();
       const core=new THREE.Mesh(new THREE.SphereGeometry(r,20,20),
         new THREE.MeshPhongMaterial({color:col,emissive:col,emissiveIntensity:0.5,shininess:60,transparent:true,opacity:1}));
@@ -582,9 +617,10 @@ export default function App() {
   useEffect(()=>{
     normRef.current=norm;
     const Graph=graphObjRef.current; if(!Graph) return;
+    kindColorRef.current=Object.fromEntries(Object.entries(kindColors).map(([k,v])=>[k,hexInt(v.hex)])); // colours (incl. fallbacks) for makeNode
     refsRef.current={};                         // drop stale node objects; makeNode repopulates
     Graph.graphData(toEngineData(norm));
-  },[norm]);
+  },[norm,kindColors]);
 
   const node=selected?norm.nodes.find(n=>n.id===selected):null;
   const neighbors=selected?norm.links.filter(l=>l[0]===selected||l[1]===selected).map(l=>{const o=l[0]===selected?l[1]:l[0];return{id:o,rel:l[2],label:norm.name[o]};}):[];
@@ -711,13 +747,10 @@ export default function App() {
         <div className="legend">
           <div className="row"><GitBranch size={13}/> {norm.nodes.length}</div>
           <div className="row"><Link2 size={13}/> {norm.links.length}</div>
-          <div className="key">
-            <span><span className="dot" style={{background:"#F5B344"}}/>hub</span>
-            <span><span className="dot" style={{background:"#8B7CFF"}}/>venture</span>
-          </div>
-          <div className="key">
-            <span><span className="dot" style={{background:"#5BD6A8"}}/>people</span>
-            <span><span className="dot" style={{background:"#6B7494"}}/>rivals</span>
+          <div className="key" style={{flexWrap:"wrap",maxWidth:172,rowGap:5}}>
+            {legendKinds.map(k=>{ const c=kindColors[k]; return (
+              <span key={k}><span className="dot" style={c.ring?{background:"transparent",border:`1.5px solid ${c.hex}`}:{background:c.hex}}/>{k}</span>
+            ); })}
           </div>
         </div>
         <div className="seg" style={{position:"absolute",top:12,right:14,zIndex:3}}>
@@ -812,7 +845,7 @@ export default function App() {
                   {tq
                     ? <><div className="mono" style={{fontSize:10.5,color:"#8A94B0",marginBottom:6}}>+ New card “{targetQuery.trim()}” as:</div>
                         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                          {[["venture","Venture"],["project","Project"],["area","Area"],["card","Let processor decide"]].map(([v,lbl])=>(
+                          {[["venture","Venture"],["incubation","Incubation"],["project","Project"],["area","Area"],["card","Let processor decide"]].map(([v,lbl])=>(
                             <button key={v} onClick={()=>chooseTarget({newType:v,name:targetQuery.trim()})} className="tap mono" style={{background:"#161E33",border:"1px solid #2A3556",borderRadius:8,color:"#E8ECF7",fontSize:10.5,padding:"5px 9px"}}>{lbl}</button>
                           ))}
                         </div></>
@@ -834,7 +867,7 @@ export default function App() {
       {node&&(
         <div className="sheet">
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:9}}><span style={{width:12,height:12,borderRadius:"50%",background:HEX[node.kind]??"#6B7494",boxShadow:`0 0 10px ${HEX[node.kind]??"#6B7494"}`}}/><span className="disp" style={{fontSize:20,fontWeight:700}}>{node.label}</span><span className="chip" style={{background:(HEX[node.kind]??"#6B7494")+"22",color:HEX[node.kind]??"#6B7494"}}>{node.kind}</span></div>
+            <div style={{display:"flex",alignItems:"center",gap:9}}><span style={{width:12,height:12,borderRadius:"50%",background:(kindColors[node.kind]?.hex||"#6B7494"),boxShadow:`0 0 10px ${(kindColors[node.kind]?.hex||"#6B7494")}`}}/><span className="disp" style={{fontSize:20,fontWeight:700}}>{node.label}</span><span className="chip" style={{background:((kindColors[node.kind]?.hex||"#6B7494"))+"22",color:(kindColors[node.kind]?.hex||"#6B7494")}}>{node.kind}</span></div>
             <button onClick={()=>{setSelected(null);setOpenDec(null);}} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
           <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{norm.summary[node.id]||<span style={{color:"#6B7494"}}>No summary yet — it'll appear after the next processing run.</span>}</div>
