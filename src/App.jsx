@@ -469,6 +469,9 @@ export default function App() {
   const openCapture=()=>{ setPickerOpen(false); setShowCapture(true); };
   const closeCapture=()=>{ setShowCapture(false); setPickerOpen(false); setTarget(null); setTargetQuery(""); };
   const chooseTarget=(t)=>{ setTarget(t); setPickerOpen(false); setTargetQuery(""); };
+  // "+ Add" on a card → open the capture box pre-targeted to THAT card (sends [[slug]] text
+  // via the existing inbox path). Close the card panel so only the capture sheet shows.
+  const addThoughtTo=(card)=>{ setSelected(null); setParaCard(null); setTarget({id:card.id,label:card.label}); setPickerOpen(false); setShowCapture(true); };
 
   // Capture a thought. Composes the line from the optional target, appends via the SAME
   // outbox→inbox.md path (sync unchanged), clears the textarea but KEEPS the target and
@@ -839,7 +842,7 @@ export default function App() {
 
           <div className="lbl" style={{margin:"0 0 5px"}}>File into</div>
           <button onClick={()=>setPickerOpen(o=>!o)} className="tap" style={{width:"100%",fontFamily:"inherit",textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"10px 12px",fontSize:13,color:target?"#E8ECF7":"#8A94B0",cursor:"pointer"}}>
-            <span style={{wordBreak:"break-word"}}>{target?targetLabel(target):"Inbox (no card)"}</span>
+            <span style={{wordBreak:"break-word"}}>{!target?"Inbox (no card)":target.newType?targetLabel(target):`→ filing to ${target.label}`}</span>
             <ChevronDown size={15} style={{flexShrink:0,transform:pickerOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
           </button>
 
@@ -885,10 +888,15 @@ export default function App() {
             <button onClick={()=>{setSelected(null);setOpenDec(null);}} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
           <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{norm.summary[node.id]||<span style={{color:"#6B7494"}}>No summary yet — it'll appear after the next processing run.</span>}</div>
-          {node.card&&(<div style={{marginBottom:16}}>
-            <button onClick={()=>setCardOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {cardOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:cardOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
-            {cardOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(node.card)}}/>}
-          </div>)}
+          <div style={{marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+              {node.card
+                ? <button onClick={()=>setCardOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {cardOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:cardOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
+                : <span/>}
+              <button onClick={()=>addThoughtTo({id:node.id,label:node.label})} className="tap mono" style={{display:"flex",alignItems:"center",gap:3,background:"#0E1424",border:"1px solid #8B7CFF",color:"#8B7CFF",borderRadius:99,padding:"5px 11px",fontSize:11,fontWeight:700,flexShrink:0}}><Plus size={13}/> Add</button>
+            </div>
+            {node.card&&cardOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(node.card)}}/>}
+          </div>
           <div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:8}}>CONNECTIONS ({neighbors.length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:nodeDecs.length?18:4}}>
             {neighbors.map(nb=>(<button key={nb.id} onClick={()=>{setSelected(nb.id);setOpenDec(null);}} className="tap" style={{background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"7px 11px",color:"#E8ECF7",fontSize:12.5,display:"flex",alignItems:"center",gap:6}}>{nb.label} <span className="mono" style={{fontSize:9,color:"#6B7494"}}>{nb.rel}</span> <ArrowRight size={12} color="#6B7494"/></button>))}
@@ -910,10 +918,15 @@ export default function App() {
             <button onClick={()=>setParaCard(null)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
           </div>
           <div style={{fontSize:13.5,lineHeight:1.5,color:"#C3CAE0",marginBottom:16}}>{bodySummary(paraCard.body)||<span style={{color:"#6B7494"}}>No summary yet.</span>}</div>
-          {paraCard.body&&(<div style={{marginBottom:16}}>
-            <button onClick={()=>setParaBodyOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {paraBodyOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:paraBodyOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
-            {paraBodyOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(paraCard.body)}}/>}
-          </div>)}
+          <div style={{marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+              {paraCard.body
+                ? <button onClick={()=>setParaBodyOpen(o=>!o)} className="tap mono" style={{display:"flex",alignItems:"center",gap:5,background:"transparent",border:"none",color:"#8B7CFF",fontSize:11,padding:0}}><FileText size={13}/> {paraBodyOpen?"Hide full card":"View full card"} <ChevronDown size={13} style={{transform:paraBodyOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/></button>
+                : <span/>}
+              <button onClick={()=>addThoughtTo({id:paraCard.id,label:paraCard.label})} className="tap mono" style={{display:"flex",alignItems:"center",gap:3,background:"#0E1424",border:"1px solid #8B7CFF",color:"#8B7CFF",borderRadius:99,padding:"5px 11px",fontSize:11,fontWeight:700,flexShrink:0}}><Plus size={13}/> Add</button>
+            </div>
+            {paraCard.body&&paraBodyOpen&&<div className="exp" style={{background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:"12px 14px",marginTop:10,maxHeight:280,overflowY:"auto",fontSize:13,lineHeight:1.5,color:"#C3CAE0"}} dangerouslySetInnerHTML={{__html:mdToHtml(paraCard.body)}}/>}
+          </div>
           {paraDecs.length>0
             ? (<><div className="mono" style={{fontSize:10,color:"#8A94B0",letterSpacing:".08em",marginBottom:4}}>OPEN ITEMS</div>{paraDecs.map(d=><DecRow key={d.id} d={d} compact resolved={resolved} openDec={openDec} setOpenDec={setOpenDec} outcome={outcome} setOutcome={setOutcome} onResolve={resolve} onReopen={reopen} onConvert={convert} onSnooze={snooze} onWakeNow={wakeNow} snoozeUntilDate={null} itemType={effType(d.id)} nameMap={norm.name}/>)}</>)
             : <div className="mono" style={{fontSize:11,color:"#6B7494"}}>No open items on this card.</div>}
