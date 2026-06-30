@@ -597,7 +597,7 @@ export default function App() {
     const scene=Graph.scene();
     const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
     const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
-    Graph.cameraPosition({z:210});
+    Graph.cameraPosition({z:300});   // initial zoom-out (was 210) so the grown cloud fits on fresh load; revert to 210 to undo
 
     // Obsidian-style auto-spin until the user grabs the graph or selects a node.
     const controls=Graph.controls();
