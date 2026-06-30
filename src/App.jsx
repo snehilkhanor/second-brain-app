@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import ForceGraph3D from "3d-force-graph";
-import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play, Hash, Upload } from "lucide-react";
+import { Brain, X, ArrowRight, Check, AlertTriangle, Plus, Zap, Sparkles, RotateCcw, ChevronDown, ChevronUp, Clock, GitBranch, Link2, Cloud, CloudOff, RefreshCw, Repeat, FileText, Inbox, Play, Hash, Upload, Eye } from "lucide-react";
 import { loadConn, saveConn, disconnect as repoDisconnect, loadMirror, saveMirror, fetchGraphJson, appendToInbox, fetchInboxItems, requestProcess, normalize, toEngineData, lsGetJSON, lsSetJSON, DEFAULT_CONN } from "./repo.js";
 
 // --- sample data (the design's demo brain) ----------------------------------
@@ -681,6 +681,10 @@ export default function App() {
     : null;
   const openOutbox=()=>{ setBrainTab("outbox"); setShowProcess(true); };
 
+  // Review nudge (read-only): the processor flags items; the app only surfaces them.
+  const reviewItems=norm.review.items;
+  const reviewCount=norm.review.pending;
+
   // connection status pill (header button)
   const st=status.state;
   const statusUI = st==="ok"   ? {icon:<Cloud size={16}/>, color:"#5BD6A8", label:"synced"}
@@ -739,7 +743,13 @@ export default function App() {
           <span className="disp" style={{fontWeight:700,fontSize:17}}>second brain</span>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
+          <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>
+            <span style={{position:"relative",display:"flex"}}>
+              {statusUI.icon}
+              {reviewCount>0&&<span className="mono" style={{position:"absolute",top:-9,right:-10,background:"#F5B344",color:"#0E1424",fontSize:9,fontWeight:700,minWidth:15,height:15,borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px",border:"2px solid #0A0F1C",lineHeight:1}}>{reviewCount}</span>}
+            </span>
+            <span>{statusUI.label}</span>
+          </button>
           <button className="conn" onClick={doRefresh} title="Refresh" aria-label="Refresh" style={{color:"#8A94B0",padding:"6px 9px"}}><RefreshCw size={16} className={status.state==="loading"?"spin":""}/></button>
           <button className="conn" onClick={togglePara} title="PARA" aria-label="PARA" style={(!brainOpen&&dashView==="para")?{background:"#8B7CFF",borderColor:"#8B7CFF",color:"#0E1424"}:{color:"#8A94B0"}}>PARA</button>
         </div>
@@ -913,9 +923,10 @@ export default function App() {
       {showProcess&&(
         <div className="sheet" style={{zIndex:14}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",borderBottom:"1px solid #1B2440",marginBottom:14}}>
-            <div className="tabs">
+            <div className="tabs" style={{gap:"16px"}}>
               <button className={"stab tap"+(brainTab==="inbox"?" on":"")} onClick={()=>setBrainTab("inbox")}><Inbox size={13}/> Inbox<span className="n">({inboxCount})</span></button>
               <button className={"stab tap"+(brainTab==="outbox"?" on":"")} onClick={()=>setBrainTab("outbox")}><Upload size={13}/> Outbox<span className="n" style={failedCount>0?{color:"#F87171"}:undefined}>({outbox.length})</span></button>
+              <button className={"stab tap"+(brainTab==="review"?" on":"")} onClick={()=>setBrainTab("review")}><Eye size={13}/> Review<span className="n" style={reviewCount>0?{color:"#F5B344"}:undefined}>({reviewCount})</span></button>
             </div>
             <button onClick={()=>setShowProcess(false)} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0",marginBottom:6}}><X size={20}/></button>
           </div>
@@ -971,6 +982,27 @@ export default function App() {
                           : <span className="chip" style={{background:"#F5B34422",color:"#F5B344"}}>{syncing?"syncing…":"pending"}</span>}
                         {it.failed&&<button onClick={()=>retryItem(it.id)} className="tap mono" style={{display:"flex",alignItems:"center",gap:4,background:"#0E1424",border:"1px solid #2A3556",borderRadius:8,color:"#AEB7D4",fontSize:10.5,padding:"4px 9px"}}><RotateCcw size={11}/> retry</button>}
                       </div>
+                    </div>
+                  ))}
+                </div>}
+          </>)}
+
+          {brainTab==="review"&&(<>
+            <div style={{fontSize:12.5,lineHeight:1.5,color:"#8A94B0",marginBottom:12}}>
+              Items the processor flagged for a look. Read-only here — <span style={{color:"#C3CAE0"}}>review these in the processor</span> to clear them.
+              {norm.review.last_reviewed&&<><br/><span className="mono" style={{fontSize:10.5,color:"#6B7494"}}>last reviewed {norm.review.last_reviewed}</span></>}
+            </div>
+            {reviewItems.length===0
+              ? <div className="mono" style={{fontSize:11.5,color:"#5C678C",padding:"6px 0"}}>Nothing to review.</div>
+              : <div style={{maxHeight:320,overflowY:"auto"}}>
+                  {reviewItems.map((it,i)=>(
+                    <div key={it.id||i} style={{borderTop:"1px solid #232C46",padding:"10px 0"}}>
+                      <div style={{fontSize:13,lineHeight:1.45,color:"#E8ECF7",wordBreak:"break-word"}}>{it.text}</div>
+                      {it.reason&&<div className="mono" style={{fontSize:10.5,color:"#F5B344",marginTop:4,lineHeight:1.4}}>{it.reason}</div>}
+                      {(it.card||it.date)&&<div style={{display:"flex",alignItems:"center",gap:8,marginTop:5,flexWrap:"wrap"}}>
+                        {it.card&&<span className="chip" style={{background:"#8B7CFF22",color:"#8B7CFF"}}>{it.card}</span>}
+                        {it.date&&<span className="mono" style={{fontSize:10,color:"#6B7494"}}>{it.date}</span>}
+                      </div>}
                     </div>
                   ))}
                 </div>}

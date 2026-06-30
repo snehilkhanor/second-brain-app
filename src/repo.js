@@ -257,7 +257,19 @@ export function normalize(g) {
     archive: Array.isArray(p.archive) ? p.archive : [],
   };
 
-  return { nodes, links, name, summary, dec, decsByNode, para };
+  // REVIEW block (read-only nudge). The processor flags items for review and is the ONLY
+  // thing that ever clears them; the app just surfaces them. Shape:
+  //   review: { pending:int, items:[{id,text,reason,card,date}], last_reviewed:string|null }
+  // Defensive: missing block/fields → empty; pending falls back to items.length.
+  const rv = (g && typeof g.review === "object" && g.review) ? g.review : {};
+  const reviewItems = Array.isArray(rv.items) ? rv.items : [];
+  const review = {
+    items: reviewItems,
+    pending: Number.isFinite(rv.pending) ? rv.pending : reviewItems.length,
+    last_reviewed: rv.last_reviewed || null,
+  };
+
+  return { nodes, links, name, summary, dec, decsByNode, para, review };
 }
 
 // The engine wants graph.json node/link shape with `connections` for sizing.
