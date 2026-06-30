@@ -583,7 +583,8 @@ export default function App() {
     graphObjRef.current=Graph;
 
     // Track press timing on the canvas so onNodeClick can tell a tap from a hold.
-    const onDown=()=>{ pressStart.current=Date.now(); pressing.current=true; };
+    let userMoved=false;   // becomes true on first interaction; stops auto-framing from then on
+    const onDown=()=>{ pressStart.current=Date.now(); pressing.current=true; userMoved=true; };
     const onUp=()=>{ pressing.current=false; };
     mount.addEventListener("pointerdown",onDown);
     mount.addEventListener("pointerup",onUp);
@@ -597,7 +598,14 @@ export default function App() {
     const scene=Graph.scene();
     const l1=new THREE.PointLight(0x8B7CFF,0.8); l1.position.set(120,120,120); scene.add(l1);
     const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
-    Graph.cameraPosition({z:300});   // initial zoom-out (was 210) so the grown cloud fits on fresh load; revert to 210 to undo
+    Graph.cameraPosition({z:300});   // initial pre-settle distance (was 210)
+
+    // As the brain grows a fixed distance goes stale, so once the layout settles
+    // we auto-frame the whole cloud (with padding). We reframe on each settle until
+    // the user first touches the graph (so the live graph reframes after the cached
+    // one loads), then never again. The user can pinch/drag freely afterwards.
+    // REVERT: delete this line + restore z:210 above.
+    Graph.onEngineStop(()=>{ if(!userMoved) Graph.zoomToFit(700,90); });
 
     // Obsidian-style auto-spin until the user grabs the graph or selects a node.
     const controls=Graph.controls();
