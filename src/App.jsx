@@ -274,6 +274,9 @@ export default function App() {
         try{
           await appendToInbox(c, kept.map(it=>it.line), `app: sync (${kept.length})`);   // ONE batched commit
           setOutboxP(outboxRef.current.filter(it=>!keptIds.has(it.id)));                  // confirmed 2xx → remove
+          // Reflect the just-synced lines in the inbox count — captures AND actions —
+          // deduped verbatim (matches inbox.md's idempotent append, so no over/double count).
+          setInboxItems(prev=>{ const have=new Set(prev.map(l=>String(l).replace(/\s+$/,""))); const add=kept.map(it=>it.line).filter(l=>!have.has(String(l).replace(/\s+$/,""))); if(!add.length) return prev; const v=[...prev,...add]; lsSetJSON("sb_inbox",v); return v; });
         }catch(e){
           const tag=e.status?`HTTP ${e.status}`:String(e.message||e);
           setOutboxP(outboxRef.current.map(it=> keptIds.has(it.id) ? {...it,failed:true,err:tag} : it)); // surface stall
@@ -435,7 +438,8 @@ export default function App() {
     if(target&&target.id){ const r=[target.id,...recentTargets.filter(x=>x!==target.id)].slice(0,8); setRecentTargets(r); lsSetJSON("sb_recent_targets",r); }
     if(!conn.token){ showToast(`Captured${target?` → ${targetLabel(target)}`:""} (demo — connect to save)`); return; }
     enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line});
-    setInboxItems(prev=>{ const v=[...prev,line]; lsSetJSON("sb_inbox",v); return v; });   // optimistic append (a refetch would lag the write)
+    // The inbox count bumps when the line actually syncs (in flushOutbox), so captures
+    // AND actions (snooze/resolve/convert/wake) all reflect once written — see flushOutbox.
     showToast(navigator.onLine?(target?`Filed → ${targetLabel(target)}`:"Captured to inbox"):"Saved — will sync when online");
   };
 
