@@ -122,17 +122,32 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 // Normalise lines: each trimmed of trailing whitespace + its own single "\n".
 const joinLines = (lines) => lines.map((l) => String(l).replace(/\s+$/, "") + "\n").join("");
 
-// Append a pre-joined block (one or more newline-terminated lines) in ONE commit.
-// Re-fetch the current sha immediately before the PUT; on a 409/422 sha-conflict
-// (e.g. GitHub's read-after-write lag) re-fetch and retry with a small backoff.
-// The existing content is normalised to end with exactly one "\n" first, so lines
-// never run together and no double blanks appear. Written only on a confirmed 2xx.
-async function appendBlock(conn, block, message, maxAttempts) {
+// A line's identity for presence checks = its content with trailing whitespace stripped
+// (exactly the normalisation joinLines applies when writing), so a previously-written
+// line matches byte-for-byte. Build the set of lines already in inbox.md.
+const lineKey = (l) => String(l).replace(/\s+$/, "");
+const presentSet = (text) => new Set((text || "").split("\n").map(lineKey).filter((l) => l !== ""));
+
+// Append the given lines to inbox.md in ONE commit — IDEMPOTENTLY. Before each PUT we
+// re-read inbox.md and drop any line ALREADY present verbatim. This fixes the false-409:
+// GitHub can APPLY a write yet still return 409 when a concurrent write slips between our
+// read-sha and our PUT. Without a presence check the retry re-reads the (now-updated) file
+// and appends the same line again (double-write), and an exhausted retry reports a phantom
+// failure even though the line is already saved. With it:
+//  - retries never re-append a line that's already there (idempotent),
+//  - a landed-but-409 write resolves to a no-op SUCCESS on the next pass,
+//  - genuinely-absent lines are the only ones (re-)PUT (re-reading the sha each time).
+// If every line is already present it's a no-op success. Retry sha-conflicts with backoff.
+async function appendLines(conn, lines, message, maxAttempts) {
   let lastErr;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const cur = await getFileRaw(conn, "inbox.md");
-    const base = (cur ? cur.text : "").replace(/\s+$/, "");
-    const next = (base ? base + "\n" : "") + block;
+    const text = cur ? cur.text : "";
+    const have = presentSet(text);
+    const missing = lines.filter((l) => !have.has(lineKey(l)));
+    if (!missing.length) return { ok: true, noop: true }; // all already saved → succeeded
+    const base = text.replace(/\s+$/, "");
+    const next = (base ? base + "\n" : "") + joinLines(missing);
     try {
       return await putFile(conn, "inbox.md", next, cur?.sha, message);
     } catch (e) {
@@ -140,22 +155,27 @@ async function appendBlock(conn, block, message, maxAttempts) {
       throw e; // non-conflict (offline/auth/etc.) — bubble up so it stays queued
     }
   }
+  // Retries exhausted: the 409 on the final attempt may itself have landed — re-check
+  // presence before declaring failure, so a succeeded-but-409 write is never reported failed.
+  const cur = await getFileRaw(conn, "inbox.md");
+  const have = presentSet(cur ? cur.text : "");
+  if (lines.every((l) => have.has(lineKey(l)))) return { ok: true, noop: true };
   throw lastErr || new Error("append failed after retries");
 }
 
-// Append one line (string) or many lines (array) to inbox.md. Append-only; never
-// edits cards. Batches ALL lines into ONE commit; if the batch keeps conflicting
-// (409/422) after retries, falls back to writing each line one-at-a-time (its own
-// commit, re-reading the sha each time). Newline-terminated, no run-ons.
+// Append one line (string) or many lines (array) to inbox.md. Append-only; never edits
+// cards. Batches ALL lines into ONE commit; on persistent 409/422 with many lines, falls
+// back to writing each line one-at-a-time. IDEMPOTENT: a line already present verbatim in
+// inbox.md is never appended again, so retries (and false-409s) can't double-write.
 export async function appendToInbox(conn, lines, message = "app: write") {
   if (!conn.token) throw new Error("Not connected");
-  const arr = Array.isArray(lines) ? lines : [lines];
+  const arr = (Array.isArray(lines) ? lines : [lines]).filter((l) => String(l).trim() !== "");
   if (!arr.length) return;
   try {
-    return await appendBlock(conn, joinLines(arr), message, 3);
+    return await appendLines(conn, arr, message, 3);
   } catch (e) {
     if ((e.status === 409 || e.status === 422) && arr.length > 1) {
-      for (const l of arr) await appendBlock(conn, joinLines([l]), message, 5); // one-at-a-time fallback
+      for (const l of arr) await appendLines(conn, [l], message, 5); // one-at-a-time, each idempotent
       return;
     }
     throw e;
