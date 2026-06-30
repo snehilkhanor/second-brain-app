@@ -230,7 +230,15 @@ export default function App() {
   useEffect(()=>{ setCardOpen(false); if(selected) setParaCard(null); },[selected]); // collapse "full card"; close PARA panel when a node is selected
   useEffect(()=>{ setParaBodyOpen(false); },[paraCard]); // collapse the PARA "full card" when switching cards
   useEffect(()=>{ if(showCapture && !pickerOpen) capRef.current?.focus(); },[showCapture,pickerOpen]); // focus the textarea (not while the picker search is up)
-  const pickView=(v)=>{ dashTouched.current=true; setDashView(v); }; // manual tab tap sticks for the session
+  // Header PARA toggle: jump to the PARA view (collapsing the brain so the dashboard is
+  // visible); when already showing PARA, toggle back to Items. Marks the tab manually
+  // chosen so the open==0 default rule won't override it for the session.
+  const togglePara=()=>{
+    dashTouched.current=true;
+    const showingPara = !brainOpen && dashView==="para";
+    setBrainOpen(false);
+    setDashView(showingPara ? "items" : "para");
+  };
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
   // Update the ref synchronously so flushOutbox(), called right after, sees the
@@ -733,6 +741,7 @@ export default function App() {
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <button className="conn" onClick={openSettings} style={{color:statusUI.color}}>{statusUI.icon}<span>{statusUI.label}</span></button>
           <button className="conn" onClick={doRefresh} title="Refresh" aria-label="Refresh" style={{color:"#8A94B0",padding:"6px 9px"}}><RefreshCw size={16} className={status.state==="loading"?"spin":""}/></button>
+          <button className="conn" onClick={togglePara} title="PARA" aria-label="PARA" style={(!brainOpen&&dashView==="para")?{background:"#8B7CFF",borderColor:"#8B7CFF",color:"#0E1424"}:{color:"#8A94B0"}}>PARA</button>
         </div>
       </div>
 
@@ -780,11 +789,6 @@ export default function App() {
             <Stat icon={<AlertTriangle size={13}/>} v={openCountTotal} l="open" c="#8B7CFF"/>
             <Stat icon={<Inbox size={13}/>} v={linesProcessed} l="processed" c="#79C0FF"/>
           </div>
-        </div>
-
-        <div className="seg" style={{marginBottom:13,width:"fit-content"}}>
-          <button className={dashView==="items"?"on":""} onClick={()=>pickView("items")}>Items</button>
-          <button className={dashView==="para"?"on":""} onClick={()=>pickView("para")}>PARA</button>
         </div>
 
         {dashView==="items"&&(
