@@ -577,7 +577,7 @@ export default function App() {
       .onNodeClick(n=>{
         const held = (Date.now()-pressStart.current) >= 450;
         if(held){ setFocus(n.id); setSelected(null); }   // focus only — no panel
-        else { setFocus(null); setSelected(n.id); }      // normal tap — open panel
+        else { setSelected(n.id); }                       // tap opens the panel; focus (if any) stays until empty-space tap
       })
       .onBackgroundClick(()=>{ setSelected(null); setFocus(null); });
     graphObjRef.current=Graph;
