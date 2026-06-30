@@ -170,6 +170,7 @@ export default function App() {
   const [mode,setMode]=useState("glow");          // glow | badge
   const [brainOpen,setBrainOpen]=useState(true);
   const [selected,setSelected]=useState(null);
+  const [focus,setFocus]=useState(null);          // long-press: highlight node+neighbours, no panel
   const [resolved,setResolved]=useState(()=>lsGetJSON("sb_res",{}));
   const [captures,setCaptures]=useState(()=>lsGetJSON("sb_cap",[]));
   const [outbox,setOutbox]=useState(()=>lsGetJSON("sb_outbox",[]));   // writes not yet pushed
@@ -221,6 +222,7 @@ export default function App() {
   }),[kindColors]);
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
+  const focusRef=useRef(null), pressStart=useRef(0), pressing=useRef(false);
   const lastProcessedRef=useRef(lsGetJSON("sb_lp",null)); // last-seen stats.lines_processed (for the reward toast)
   const capRef=useRef(null); // capture-sheet textarea (for focus management)
   const kindColorRef=useRef({}); // kind -> THREE colour int, kept current for makeNode
@@ -246,6 +248,7 @@ export default function App() {
   const setOutboxP=(arr)=>{ outboxRef.current=arr; setOutbox(arr); lsSetJSON("sb_outbox",arr); };
   useEffect(()=>{outboxRef.current=outbox;},[outbox]);
   useEffect(()=>{selRef.current=selected;},[selected]);
+  useEffect(()=>{focusRef.current=focus;},[focus]);
   useEffect(()=>{modeRef.current=mode;},[mode]);
   useEffect(()=>{resRef.current=resolved;},[resolved]);
   useEffect(()=>{ const t=setTimeout(()=>resizeRef.current&&resizeRef.current(),70); return ()=>clearTimeout(t); },[brainOpen]);
@@ -529,10 +532,11 @@ export default function App() {
   // (re-applying the accessors makes 3d-force-graph re-evaluate every link).
   useEffect(()=>{
     let act=null;
-    if(selected){ act=new Set([selected]); norm.links.forEach(([s,t])=>{ if(s===selected)act.add(t); if(t===selected)act.add(s); }); }
+    const anchor=focus||selected;   // long-press focus OR a tapped (panel-open) node
+    if(anchor){ act=new Set([anchor]); norm.links.forEach(([s,t])=>{ if(s===anchor)act.add(t); if(t===anchor)act.add(s); }); }
     activeRef.current=act;
     const G=graphObjRef.current; if(G){ G.linkColor(linkColorFor).linkWidth(linkWidthFor); }
-  },[selected,norm]); // eslint-disable-line
+  },[selected,focus,norm]); // eslint-disable-line
 
   // --- 3D engine: created once; data synced separately when it changes -------
   useEffect(()=>{
@@ -568,9 +572,22 @@ export default function App() {
       .linkWidth(linkWidthFor)
       .linkOpacity(0.6)
       .enableNodeDrag(false)   // match the design: drag rotates the cloud, tap selects a node
-      .onNodeClick(n=>setSelected(n.id))
-      .onBackgroundClick(()=>setSelected(null));
+      // Tap = open the node's panel. Long-press (hold ~450ms in place) = "focus":
+      // highlight the node + its links and dim everything else, WITHOUT opening the panel.
+      .onNodeClick(n=>{
+        const held = (Date.now()-pressStart.current) >= 450;
+        if(held){ setFocus(n.id); setSelected(null); }   // focus only — no panel
+        else { setFocus(null); setSelected(n.id); }      // normal tap — open panel
+      })
+      .onBackgroundClick(()=>{ setSelected(null); setFocus(null); });
     graphObjRef.current=Graph;
+
+    // Track press timing on the canvas so onNodeClick can tell a tap from a hold.
+    const onDown=()=>{ pressStart.current=Date.now(); pressing.current=true; };
+    const onUp=()=>{ pressing.current=false; };
+    mount.addEventListener("pointerdown",onDown);
+    mount.addEventListener("pointerup",onUp);
+    mount.addEventListener("pointercancel",onUp);
 
     // Keep the cloud tight, like the design's hand-tuned springs.
     Graph.d3Force("charge").strength(-160);
@@ -591,8 +608,8 @@ export default function App() {
     let raf, clock=0;
     function decorate(){
       raf=requestAnimationFrame(decorate); clock+=0.05;
-      const md=modeRef.current, sel=selRef.current, n0=normRef.current;
-      controls.autoRotate = !sel;
+      const md=modeRef.current, sel=focusRef.current||selRef.current, n0=normRef.current;
+      controls.autoRotate = !sel && !pressing.current;   // pause spin while focused/selected or mid-press
       const act=activeRef.current;   // null = nothing selected; otherwise selected + neighbours
       n0.nodes.forEach(n=>{
         const R=refsRef.current[n.id]; if(!R) return;
@@ -621,7 +638,9 @@ export default function App() {
     rs(); resizeRef.current=rs;
     const ro=new ResizeObserver(()=>rs()); ro.observe(mount);
 
-    return ()=>{ cancelAnimationFrame(raf); ro.disconnect(); Graph._destructor(); graphObjRef.current=null; };
+    return ()=>{ cancelAnimationFrame(raf); ro.disconnect();
+      mount.removeEventListener("pointerdown",onDown); mount.removeEventListener("pointerup",onUp); mount.removeEventListener("pointercancel",onUp);
+      Graph._destructor(); graphObjRef.current=null; };
   },[]);
 
   // Push the current (demo or live) graph into the engine whenever it changes.
