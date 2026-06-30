@@ -157,6 +157,11 @@ export default function App() {
   const [outbox,setOutbox]=useState(()=>lsGetJSON("sb_outbox",[]));   // writes not yet pushed
   const [syncing,setSyncing]=useState(false);                        // a flush is in flight
   const [draft,setDraft]=useState("");
+  const [showCapture,setShowCapture]=useState(false);            // expanded capture sheet
+  const [target,setTarget]=useState(null);                       // file-into: null | {id,label} | {newType,name}
+  const [pickerOpen,setPickerOpen]=useState(false);              // target picker open in capture sheet
+  const [targetQuery,setTargetQuery]=useState("");               // card search query
+  const [recentTargets,setRecentTargets]=useState(()=>{ const v=lsGetJSON("sb_recent_targets",[]); return Array.isArray(v)?v:[]; }); // recently filed-into card ids
   const [openDec,setOpenDec]=useState(null);
   const [outcome,setOutcome]=useState("");
   const [toast,setToast]=useState(null);
@@ -183,11 +188,13 @@ export default function App() {
 
   const selRef=useRef(null), modeRef=useRef("glow"), resRef=useRef({}), resizeRef=useRef(null);
   const lastProcessedRef=useRef(lsGetJSON("sb_lp",null)); // last-seen stats.lines_processed (for the reward toast)
+  const capRef=useRef(null); // capture-sheet textarea (for focus management)
   const dashDefaulted=useRef(false), dashTouched=useRef(false); // dashboard-tab default-once + manual-override flags
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
   const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
   useEffect(()=>{ setCardOpen(false); if(selected) setParaCard(null); },[selected]); // collapse "full card"; close PARA panel when a node is selected
   useEffect(()=>{ setParaBodyOpen(false); },[paraCard]); // collapse the PARA "full card" when switching cards
+  useEffect(()=>{ if(showCapture && !pickerOpen) capRef.current?.focus(); },[showCapture,pickerOpen]); // focus the textarea (not while the picker search is up)
   const pickView=(v)=>{ dashTouched.current=true; setDashView(v); }; // manual tab tap sticks for the session
 
   const persist=(k,v)=>lsSetJSON(k,v);                         // on-device storage
@@ -390,15 +397,46 @@ export default function App() {
   };
   const reopen=(id)=>{const r={...resolved};delete r[id];setResolved(r);persist("sb_res",r);};
 
-  // Capture a thought: optimistic local add, then append the raw line to inbox.md.
+  // --- capture targeting ("File into…") -------------------------------------
+  // Targets = existing cards (graph nodes + PARA entries, both {id,label}) or a NEW card
+  // the processor will create. Default target null = untargeted raw dump (unchanged).
+  const allTargets=useMemo(()=>{
+    const seen=new Set(), out=[];
+    const push=(id,label)=>{ if(!id||seen.has(id))return; seen.add(id); out.push({id,label:label||id}); };
+    norm.nodes.forEach(n=>push(n.id,n.label));
+    ["projects","areas","resources","archive"].forEach(k=>(norm.para[k]||[]).forEach(e=>push(e.id,e.label)));
+    return out;
+  },[norm]);
+  // Before typing: recently filed-into cards (still present) + active Projects, max 5.
+  const smartTargets=useMemo(()=>{
+    const seen=new Set(), out=[];
+    const add=(t)=>{ if(t&&!seen.has(t.id)){ seen.add(t.id); out.push(t); } };
+    recentTargets.forEach(id=>add(allTargets.find(t=>t.id===id)));
+    (norm.para.projects||[]).forEach(e=>add({id:e.id,label:e.label}));
+    return out.slice(0,5);
+  },[recentTargets,allTargets,norm]); // eslint-disable-line
+  const tq=targetQuery.trim().toLowerCase();
+  const targetResults = tq ? allTargets.filter(t=>(t.label+" "+t.id).toLowerCase().includes(tq)).slice(0,12) : smartTargets;
+  const targetLabel=(t)=> !t ? "Inbox (no card)" : t.newType ? `new ${t.newType==="card"?"card (processor decides)":t.newType}: ${t.name}` : `[[${t.id}]] ${t.label}`;
+  const composeLine=(text,t)=> !t ? text : t.newType ? `[[+${t.newType}: ${t.name}]] ${text}` : `[[${t.id}]] ${text}`;
+  const tRow={display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,width:"100%",textAlign:"left",fontFamily:"inherit",background:"transparent",border:"none",borderBottom:"1px solid #1B2440",padding:"9px 4px",fontSize:13,cursor:"pointer"};
+  const openCapture=()=>{ setPickerOpen(false); setShowCapture(true); };
+  const closeCapture=()=>{ setShowCapture(false); setPickerOpen(false); setTarget(null); setTargetQuery(""); };
+  const chooseTarget=(t)=>{ setTarget(t); setPickerOpen(false); setTargetQuery(""); };
+
+  // Capture a thought. Composes the line from the optional target, appends via the SAME
+  // outbox→inbox.md path (sync unchanged), clears the textarea but KEEPS the target and
+  // sheet open so many notes can be filed into one card without reselecting.
   const capture=()=>{
-    const t=draft.trim();if(!t)return;
-    const next=[{t,ts:Date.now()},...captures];
+    const text=draft.trim(); if(!text) return;
+    const line=composeLine(text,target);
+    const next=[{t:line,ts:Date.now()},...captures];
     setCaptures(next);persist("sb_cap",next);setDraft("");
-    if(!conn.token){ showToast("Captured (demo — connect to save)"); return; }
-    enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line:t});
-    setInboxItems(prev=>{ const v=[...prev,t]; lsSetJSON("sb_inbox",v); return v; });   // optimistic append (a refetch would lag the write)
-    showToast(navigator.onLine?"Captured to inbox":"Saved — will sync when online");
+    if(target&&target.id){ const r=[target.id,...recentTargets.filter(x=>x!==target.id)].slice(0,8); setRecentTargets(r); lsSetJSON("sb_recent_targets",r); }
+    if(!conn.token){ showToast(`Captured${target?` → ${targetLabel(target)}`:""} (demo — connect to save)`); return; }
+    enqueue({id:"c_"+Date.now(), kind:"thought", ts:Date.now(), message:"app: capture", line});
+    setInboxItems(prev=>{ const v=[...prev,line]; lsSetJSON("sb_inbox",v); return v; });   // optimistic append (a refetch would lag the write)
+    showToast(navigator.onLine?(target?`Filed → ${targetLabel(target)}`:"Captured to inbox"):"Saved — will sync when online");
   };
 
   // Convert an item decision<->task: optimistic local override + append a convert line.
@@ -627,7 +665,7 @@ export default function App() {
   .conn{display:flex;align-items:center;gap:5px;background:#0E1424;border:1px solid #2A3556;border-radius:99px;padding:6px 11px;cursor:pointer;font-size:11px;font-weight:600}
   .dash{flex:1;overflow-y:auto;padding:14px 16px 20px}
   .dash.hidden{display:none}
-  .capbar{flex-shrink:0;display:flex;gap:8;padding:10px 16px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:#0E1424;border-top:1px solid #232C46}
+  .capbar{flex-shrink:0;display:flex;gap:8px;padding:10px 16px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:#0E1424;border-top:1px solid #232C46}
   .card{background:#161E33;border:1px solid #232C46;border-radius:16px;margin-bottom:13px}
   .tap{transition:all .15s;cursor:pointer}.tap:active{transform:scale(.97)}
   .sheet{position:absolute;left:0;right:0;bottom:0;background:#141B30;border-top:1px solid #2A3556;border-radius:20px 20px 0 0;padding:18px 18px 26px;box-shadow:0 -10px 40px rgba(0,0,0,.55);animation:up .26s cubic-bezier(.2,.8,.2,1);max-height:82%;overflow-y:auto;z-index:8}
@@ -737,9 +775,57 @@ export default function App() {
       </div>
 
       <div className="capbar">
-        <input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&capture()} placeholder="Drop a thought..." style={{flex:1,background:"#161E33",border:"1px solid #2A3556",borderRadius:12,color:"#E8ECF7",padding:"12px 14px",fontSize:14,outline:"none"}}/>
-        <button onClick={capture} className="tap" style={{background:"#8B7CFF",color:"#0E1424",border:"none",borderRadius:12,padding:"0 16px",fontWeight:600,fontSize:14,display:"flex",alignItems:"center",gap:4}}><Plus size={17}/> Add</button>
+        <button onClick={openCapture} className="tap" style={{flex:1,textAlign:"left",fontFamily:"inherit",background:"#161E33",border:"1px solid #2A3556",borderRadius:12,color:"#6E7794",padding:"12px 14px",fontSize:14,cursor:"pointer"}}>Drop a thought…</button>
+        <button onClick={openCapture} className="tap" style={{background:"#8B7CFF",color:"#0E1424",border:"none",borderRadius:12,padding:"0 16px",fontWeight:600,fontSize:14,display:"flex",alignItems:"center",gap:4}}><Plus size={17}/> Add</button>
       </div>
+
+      {showCapture&&(
+        <div className="sheet" style={{zIndex:16,animationDuration:".16s"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <span className="disp" style={{fontSize:18,fontWeight:700}}>Capture</span>
+            <button onClick={closeCapture} className="tap" style={{background:"transparent",border:"none",color:"#8A94B0"}}><X size={20}/></button>
+          </div>
+
+          <div className="lbl" style={{margin:"0 0 5px"}}>File into</div>
+          <button onClick={()=>setPickerOpen(o=>!o)} className="tap" style={{width:"100%",fontFamily:"inherit",textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:"#0E1424",border:"1px solid #2A3556",borderRadius:10,padding:"10px 12px",fontSize:13,color:target?"#E8ECF7":"#8A94B0",cursor:"pointer"}}>
+            <span style={{wordBreak:"break-word"}}>{target?targetLabel(target):"Inbox (no card)"}</span>
+            <ChevronDown size={15} style={{flexShrink:0,transform:pickerOpen?"rotate(180deg)":"none",transition:"transform .2s"}}/>
+          </button>
+
+          {pickerOpen&&(
+            <div style={{marginTop:8,background:"#0E1424",border:"1px solid #232C46",borderRadius:12,padding:10}}>
+              <input value={targetQuery} onChange={e=>setTargetQuery(e.target.value)} autoFocus placeholder="Search cards…" className="fld" style={{marginBottom:8}}/>
+              <div style={{maxHeight:210,overflowY:"auto"}}>
+                <button onClick={()=>chooseTarget(null)} className="tap" style={tRow}><span style={{color:"#8A94B0"}}>Inbox (no card)</span></button>
+                {targetResults.map(t=>(
+                  <button key={t.id} onClick={()=>chooseTarget({id:t.id,label:t.label})} className="tap" style={tRow}>
+                    <span style={{color:"#E8ECF7",wordBreak:"break-word"}}>{t.label}</span>
+                    <span className="mono" style={{fontSize:10,color:"#6B7494",flexShrink:0}}>{t.id}</span>
+                  </button>
+                ))}
+                {!tq&&targetResults.length===0&&<div className="mono" style={{fontSize:11,color:"#5C678C",padding:"6px 4px"}}>No recent targets yet — type to search.</div>}
+                <div style={{borderTop:"1px solid #232C46",marginTop:8,paddingTop:8}}>
+                  {tq
+                    ? <><div className="mono" style={{fontSize:10.5,color:"#8A94B0",marginBottom:6}}>+ New card “{targetQuery.trim()}” as:</div>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                          {[["venture","Venture"],["project","Project"],["area","Area"],["card","Let processor decide"]].map(([v,lbl])=>(
+                            <button key={v} onClick={()=>chooseTarget({newType:v,name:targetQuery.trim()})} className="tap mono" style={{background:"#161E33",border:"1px solid #2A3556",borderRadius:8,color:"#E8ECF7",fontSize:10.5,padding:"5px 9px"}}>{lbl}</button>
+                          ))}
+                        </div></>
+                    : <div className="mono" style={{fontSize:10.5,color:"#5C678C"}}>Type a name above to create a new card.</div>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <textarea ref={capRef} value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){ e.preventDefault(); capture(); } }} rows={6} placeholder={target?`Note for ${target.newType?target.name:target.label}…`:"Drop a thought — as long as you like…"} style={{width:"100%",marginTop:12,background:"#0E1424",border:"1px solid #232C46",borderRadius:12,color:"#E8ECF7",padding:"12px 14px",fontSize:14,lineHeight:1.5,outline:"none",resize:"none",fontFamily:"'Inter',sans-serif"}}/>
+
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginTop:10}}>
+            <span className="mono" style={{fontSize:10,color:"#6B7494"}}>{target?"entries stay here · ⌘/Ctrl+↵":"⌘/Ctrl+↵ to add"}</span>
+            <button onClick={capture} disabled={!draft.trim()} className="tap" style={{background:draft.trim()?"#8B7CFF":"#2A3556",color:draft.trim()?"#0E1424":"#6B7494",border:"none",borderRadius:11,padding:"10px 18px",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",gap:5,cursor:draft.trim()?"pointer":"default"}}><Plus size={16}/> Add</button>
+          </div>
+        </div>
+      )}
 
       {node&&(
         <div className="sheet">
