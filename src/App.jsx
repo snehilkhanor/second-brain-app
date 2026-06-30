@@ -609,7 +609,8 @@ export default function App() {
     function decorate(){
       raf=requestAnimationFrame(decorate); clock+=0.05;
       const md=modeRef.current, sel=focusRef.current||selRef.current, n0=normRef.current;
-      controls.autoRotate = !sel && !pressing.current;   // pause spin while focused/selected or mid-press
+      // Keep auto-spin during focus (highlight-only); only pause it when a panel is open or mid-press.
+      controls.autoRotate = !selRef.current && !pressing.current;
       const act=activeRef.current;   // null = nothing selected; otherwise selected + neighbours
       n0.nodes.forEach(n=>{
         const R=refsRef.current[n.id]; if(!R) return;
