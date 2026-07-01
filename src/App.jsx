@@ -404,16 +404,21 @@ export default function App() {
   useEffect(()=>{ openCountRef.current=openCountByNode; },[openCountByNode]);
 
   // Per-node "new" strength (0..1) from nodes[].created vs the DEVICE clock — recency is a
-  // view concern, same pattern as the snooze rule. Full for day 0–1, fades to 0 at day 3;
-  // created null/missing/unparseable → 0 (not new, no ring, no errors).
+  // view concern, same pattern as the snooze rule. To avoid clutter the ring is limited to
+  // the 5 MOST-RECENTLY-CREATED nodes; among those the glow follows the 3-day window
+  // (full day 0–1, fades to 0 at day 3). created null/missing/unparseable → not eligible;
+  // a top-5 node older than 3 days shows no ring. No errors.
   const newStrengthByNode=useMemo(()=>{
     const m={}; const now=Date.parse(todayStr+"T00:00:00"); const DAY=86400000;
-    norm.nodes.forEach(n=>{
-      if(!n.created) return;
-      const t=Date.parse(String(n.created).slice(0,10)+"T00:00:00"); if(isNaN(t)) return;
+    const dated=norm.nodes
+      .map(n=>{ const t=n.created?Date.parse(String(n.created).slice(0,10)+"T00:00:00"):NaN; return {id:n.id,t}; })
+      .filter(n=>!isNaN(n.t))
+      .sort((a,b)=>b.t-a.t)   // most recent first
+      .slice(0,5);            // only the 5 latest nodes are ever "new"
+    dated.forEach(({id,t})=>{
       const days=(now-t)/DAY;
       const s = days<=1 ? 1 : Math.max(0,(3-days)/2);   // day1→1, day2→0.5, day3→0
-      if(s>0) m[n.id]=s;
+      if(s>0) m[id]=s;
     });
     return m;
   },[norm,todayStr]);
