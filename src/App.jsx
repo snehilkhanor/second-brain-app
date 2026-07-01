@@ -609,7 +609,7 @@ export default function App() {
     Graph.onEngineStop(()=>{
       if(userMoved) return;
       Graph.zoomToFit(0,60);                    // instant fit of node centres
-      const t=Graph.controls().target, c=Graph.cameraPosition(), k=1.55;  // extra pull-back for sphere/halo size
+      const t=Graph.controls().target, c=Graph.cameraPosition(), k=1.9;   // extra pull-back for sphere/halo size
       Graph.cameraPosition({x:t.x+(c.x-t.x)*k, y:t.y+(c.y-t.y)*k, z:t.z+(c.z-t.z)*k}, undefined, 700);
     });
 
