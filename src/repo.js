@@ -119,8 +119,12 @@ async function putFile({ token, owner, repo, branch }, path, text, sha, message)
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// Normalise lines: each trimmed of trailing whitespace + its own single "\n".
-const joinLines = (lines) => lines.map((l) => String(l).replace(/\s+$/, "") + "\n").join("");
+// Normalise lines: collapse any run of INTERNAL newlines (and surrounding spaces) to
+// " / " so one item can never become several physical lines (a multi-line capture is
+// ONE inbox item — the counter and processor both split inbox.md on "\n"). Then trim
+// trailing whitespace + add each element's own single "\n". Separate array elements
+// stay separate lines, so the batch-dump path (distinct outbox items) is unaffected.
+const joinLines = (lines) => lines.map((l) => String(l).replace(/\s*\n+\s*/g, " / ").replace(/\s+$/, "") + "\n").join("");
 
 // A line's identity for presence checks = its content with trailing whitespace stripped
 // (exactly the normalisation joinLines applies when writing), so a previously-written
