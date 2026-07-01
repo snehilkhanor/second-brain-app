@@ -608,7 +608,7 @@ export default function App() {
     // cascade. Runs once; skipped after the user first touches the graph.
     // REVERT: delete this block + the frameTimer line below + restore z:210 above.
     let framed=false;
-    const MARGIN=1.12;   // breathing room beyond a tight fit — raise to zoom out, lower to zoom in
+    const MARGIN=1.2;    // breathing room beyond a tight fit — raise to zoom out, lower to zoom in
     const frameBrain=()=>{
       if(userMoved || framed) return;
       const ns=(Graph.graphData().nodes)||[];
