@@ -143,11 +143,14 @@ function badgeSprite(n){
 // Cool colour + hard thin line — deliberately unlike the warm, soft, pulsing amber
 // open-decisions glow, so the two never read as the same thing (they can coexist).
 function ringSprite(){
-  const c=document.createElement("canvas"); c.width=c.height=128; const x=c.getContext("2d");
-  const cx=64,cy=64,rad=56;
-  x.strokeStyle="rgba(150,200,255,0.20)"; x.lineWidth=4;   x.beginPath(); x.arc(cx,cy,rad,0,7); x.stroke(); // soft cool glow
-  x.strokeStyle="rgba(226,241,255,0.92)"; x.lineWidth=2;   x.beginPath(); x.arc(cx,cy,rad,0,7); x.stroke(); // crisp ice line
-  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter;
+  // High-res texture so the ring stays crisp when magnified onto large nodes (a small
+  // canvas pixelates). ONE clean stroke + a soft cool shadow-glow (not two overlapping
+  // strokes, which read as a fuzzy double-band).
+  const S=512; const c=document.createElement("canvas"); c.width=c.height=S; const x=c.getContext("2d");
+  const cx=S/2, cy=S/2, rad=S*0.40;
+  x.shadowColor="rgba(150,200,255,0.65)"; x.shadowBlur=22;   // soft cool glow around the line
+  x.strokeStyle="rgba(228,242,255,0.95)"; x.lineWidth=6; x.beginPath(); x.arc(cx,cy,rad,0,Math.PI*2); x.stroke();
+  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; t.generateMipmaps=false;
   const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false,opacity:0}));
   return s;
 }
