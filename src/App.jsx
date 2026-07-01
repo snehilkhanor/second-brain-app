@@ -600,22 +600,33 @@ export default function App() {
     const l2=new THREE.PointLight(0xF5B344,0.5); l2.position.set(-120,-80,80); scene.add(l2);
     Graph.cameraPosition({z:300});   // initial pre-settle distance (was 210)
 
-    // As the brain grows a fixed distance goes stale, so once the layout settles
-    // we auto-frame the whole cloud. zoomToFit frames node CENTRES, but our spheres
-    // + halos are large and spill past them, so we then pull the camera straight back
-    // from the graph centre by a margin. We reframe on each settle until the user
-    // first touches the graph (so the live graph reframes after the cached one loads),
-    // then never again. Pinch/drag stay free. REVERT: delete this block + restore z:210.
+    // Auto-frame the whole cloud once the layout settles, so a grown brain fits on
+    // load. We compute the camera distance DETERMINISTICALLY from the node bounding
+    // sphere (each node's spread PLUS its own sphere+halo radius) and the camera's
+    // field of view, then set the camera ONCE. Computing from the graph (not from the
+    // current camera) means repeat calls are idempotent — no compounding, no shrink
+    // cascade. Runs once; skipped after the user first touches the graph.
+    // REVERT: delete this block + the frameTimer line below + restore z:210 above.
+    let framed=false;
+    const MARGIN=1.12;   // breathing room beyond a tight fit — raise to zoom out, lower to zoom in
     const frameBrain=()=>{
-      if(userMoved) return;
-      Graph.zoomToFit(0,60);                    // instant fit of node centres
-      const t=Graph.controls().target, c=Graph.cameraPosition(), k=1.9;   // extra pull-back for sphere/halo size
-      Graph.cameraPosition({x:t.x+(c.x-t.x)*k, y:t.y+(c.y-t.y)*k, z:t.z+(c.z-t.z)*k}, undefined, 700);
+      if(userMoved || framed) return;
+      const ns=(Graph.graphData().nodes)||[];
+      if(ns.length<2 || ns.some(n=>typeof n.x!=="number")) return;   // wait for real positions
+      let cx=0,cy=0,cz=0; ns.forEach(n=>{cx+=n.x;cy+=n.y;cz+=n.z;}); cx/=ns.length; cy/=ns.length; cz/=ns.length;
+      let R=1; ns.forEach(n=>{ const rr=(refsRef.current[n.id]?.r||6)*2.1;   // include the halo (2.1x core)
+        R=Math.max(R, Math.hypot(n.x-cx,n.y-cy,n.z-cz)+rr); });
+      const cam=Graph.camera();
+      const vfov=(cam.fov||50)*Math.PI/180;
+      const hfov=2*Math.atan(Math.tan(vfov/2)*(cam.aspect||1));
+      const fov=Math.min(vfov,hfov);            // fit the LIMITING dimension (portrait -> width)
+      const dist=(R*MARGIN)/Math.tan(fov/2);
+      framed=true;
+      Graph.cameraPosition({x:cx, y:cy, z:cz+dist}, {x:cx,y:cy,z:cz}, 700);
     };
     Graph.onEngineStop(frameBrain);
-    // Timed fallbacks in case onEngineStop's timing differs with live data — reframe
-    // until the user first touches the graph, so this can't silently fail to fire.
-    const frameTimers=[setTimeout(frameBrain,1800), setTimeout(frameBrain,4000)];
+    // Fallback in case onEngineStop's timing differs with live data (idempotent + guarded).
+    const frameTimers=[setTimeout(frameBrain,2500)];
 
     // Obsidian-style auto-spin until the user grabs the graph or selects a node.
     const controls=Graph.controls();
