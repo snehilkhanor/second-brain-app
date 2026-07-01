@@ -405,16 +405,20 @@ export default function App() {
 
   // Per-node "new" strength (0..1) from nodes[].created vs the DEVICE clock — recency is a
   // view concern, same pattern as the snooze rule. To avoid clutter the ring is limited to
-  // the 10 MOST-RECENTLY-CREATED nodes; among those the glow follows the 3-day window
-  // (full day 0–1, fades to 0 at day 3). created null/missing/unparseable → not eligible;
-  // a top-10 node older than 3 days shows no ring. No errors.
+  // the 10 MOST-RECENTLY-CREATED nodes, TIE-INCLUSIVE: we keep the top 10 then extend to any
+  // node whose created date equals the 10th's cutoff, so nodes sharing a day are never split
+  // (array order / kind never decides who glows — kind-blind by construction). Among the
+  // eligible, the glow follows the 3-day window (full day 0–1, fades to 0 at day 3).
+  // created null/missing/unparseable → not eligible; an eligible node older than 3 days shows
+  // no ring. No errors.
   const newStrengthByNode=useMemo(()=>{
     const m={}; const now=Date.parse(todayStr+"T00:00:00"); const DAY=86400000;
-    const dated=norm.nodes
+    const sorted=norm.nodes
       .map(n=>{ const t=n.created?Date.parse(String(n.created).slice(0,10)+"T00:00:00"):NaN; return {id:n.id,t}; })
       .filter(n=>!isNaN(n.t))
-      .sort((a,b)=>b.t-a.t)   // most recent first
-      .slice(0,10);           // only the 10 latest nodes are ever "new"
+      .sort((a,b)=>b.t-a.t);  // most recent first
+    const cutoff = sorted.length>10 ? sorted[9].t : -Infinity;   // 10th node's date (its ties are kept too)
+    const dated = sorted.filter(n=>n.t>=cutoff);                 // top 10 + any node sharing the cutoff day
     dated.forEach(({id,t})=>{
       const days=(now-t)/DAY;
       const s = days<=1 ? 1 : Math.max(0,(3-days)/2);   // day1→1, day2→0.5, day3→0
