@@ -606,12 +606,16 @@ export default function App() {
     // from the graph centre by a margin. We reframe on each settle until the user
     // first touches the graph (so the live graph reframes after the cached one loads),
     // then never again. Pinch/drag stay free. REVERT: delete this block + restore z:210.
-    Graph.onEngineStop(()=>{
+    const frameBrain=()=>{
       if(userMoved) return;
       Graph.zoomToFit(0,60);                    // instant fit of node centres
       const t=Graph.controls().target, c=Graph.cameraPosition(), k=1.9;   // extra pull-back for sphere/halo size
       Graph.cameraPosition({x:t.x+(c.x-t.x)*k, y:t.y+(c.y-t.y)*k, z:t.z+(c.z-t.z)*k}, undefined, 700);
-    });
+    };
+    Graph.onEngineStop(frameBrain);
+    // Timed fallbacks in case onEngineStop's timing differs with live data — reframe
+    // until the user first touches the graph, so this can't silently fail to fire.
+    const frameTimers=[setTimeout(frameBrain,1800), setTimeout(frameBrain,4000)];
 
     // Obsidian-style auto-spin until the user grabs the graph or selects a node.
     const controls=Graph.controls();
@@ -653,7 +657,7 @@ export default function App() {
     rs(); resizeRef.current=rs;
     const ro=new ResizeObserver(()=>rs()); ro.observe(mount);
 
-    return ()=>{ cancelAnimationFrame(raf); ro.disconnect();
+    return ()=>{ cancelAnimationFrame(raf); ro.disconnect(); frameTimers.forEach(clearTimeout);
       mount.removeEventListener("pointerdown",onDown); mount.removeEventListener("pointerup",onUp); mount.removeEventListener("pointercancel",onUp);
       Graph._destructor(); graphObjRef.current=null; };
   },[]);
