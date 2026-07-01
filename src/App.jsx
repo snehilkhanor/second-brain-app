@@ -862,8 +862,10 @@ export default function App() {
 
       <div className={"brain"+(brainOpen?"":" hidden")}>
         <div className="legend">
-          <div className="row"><GitBranch size={13}/> {norm.nodes.length}</div>
-          <div className="row"><Link2 size={13}/> {norm.links.length}</div>
+          <div className="row" style={{gap:14}}>
+            <span style={{display:"flex",alignItems:"center",gap:6}}><GitBranch size={13}/> {norm.nodes.length}</span>
+            <span style={{display:"flex",alignItems:"center",gap:6}}><Link2 size={13}/> {norm.links.length}</span>
+          </div>
           <div className="key" style={{flexWrap:"wrap",maxWidth:172,rowGap:5}}>
             {legendKinds.map(k=>{ const c=kindColors[k]; return (
               <span key={k}><span className="dot" style={c.ring?{background:"transparent",border:`1.5px solid ${c.hex}`}:{background:c.hex}}/>{k}</span>
