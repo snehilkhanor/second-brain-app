@@ -225,6 +225,7 @@ export function normalize(g) {
     summary: n.summary || "",
     card: n.card || "",                 // full markdown body (for "View full card")
     connections: n.connections != null ? n.connections : (deg[n.id] || 0),
+    created: n.created || null,         // YYYY-MM-DD when the node was created (drives the "new" ring); null if absent
   }));
   const links = rawLinks.map((l) => [l.source, l.target, l.label || ""]);
 

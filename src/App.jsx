@@ -139,6 +139,18 @@ function badgeSprite(n){
   const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false}));
   s.scale.set(9,9,1); s.userData={count:n}; return s;
 }
+// The "new node" signal: a thin, crisp ICE-WHITE ring outline (camera-facing sprite).
+// Cool colour + hard thin line — deliberately unlike the warm, soft, pulsing amber
+// open-decisions glow, so the two never read as the same thing (they can coexist).
+function ringSprite(){
+  const c=document.createElement("canvas"); c.width=c.height=128; const x=c.getContext("2d");
+  const cx=64,cy=64,rad=56;
+  x.strokeStyle="rgba(150,200,255,0.20)"; x.lineWidth=4;   x.beginPath(); x.arc(cx,cy,rad,0,7); x.stroke(); // soft cool glow
+  x.strokeStyle="rgba(226,241,255,0.92)"; x.lineWidth=2;   x.beginPath(); x.arc(cx,cy,rad,0,7); x.stroke(); // crisp ice line
+  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter;
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false,opacity:0}));
+  return s;
+}
 
 // Collapse redundant queued actions on the same item before writing:
 //  - resolve/snooze are terminal — the LAST one supersedes every earlier action
@@ -228,7 +240,7 @@ export default function App() {
   const kindColorRef=useRef({}); // kind -> THREE colour int, kept current for makeNode
   const dashDefaulted=useRef(false), dashTouched=useRef(false); // dashboard-tab default-once + manual-override flags
   const normRef=useRef(norm), refsRef=useRef({}), graphObjRef=useRef(null), activeRef=useRef(null);
-  const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null);
+  const outboxRef=useRef(outbox), flushing=useRef(false), openCountRef=useRef({}), flushTimer=useRef(null), newStrengthRef=useRef({});
   useEffect(()=>{ setCardOpen(false); if(selected) setParaCard(null); },[selected]); // collapse "full card"; close PARA panel when a node is selected
   useEffect(()=>{ setParaBodyOpen(false); },[paraCard]); // collapse the PARA "full card" when switching cards
   useEffect(()=>{ if(showCapture && !pickerOpen) capRef.current?.focus(); },[showCapture,pickerOpen]); // focus the textarea (not while the picker search is up)
@@ -390,6 +402,22 @@ export default function App() {
     return m;
   },[norm,resolved,snoozes,todayStr]); // eslint-disable-line
   useEffect(()=>{ openCountRef.current=openCountByNode; },[openCountByNode]);
+
+  // Per-node "new" strength (0..1) from nodes[].created vs the DEVICE clock — recency is a
+  // view concern, same pattern as the snooze rule. Full for day 0–1, fades to 0 at day 3;
+  // created null/missing/unparseable → 0 (not new, no ring, no errors).
+  const newStrengthByNode=useMemo(()=>{
+    const m={}; const now=Date.parse(todayStr+"T00:00:00"); const DAY=86400000;
+    norm.nodes.forEach(n=>{
+      if(!n.created) return;
+      const t=Date.parse(String(n.created).slice(0,10)+"T00:00:00"); if(isNaN(t)) return;
+      const days=(now-t)/DAY;
+      const s = days<=1 ? 1 : Math.max(0,(3-days)/2);   // day1→1, day2→0.5, day3→0
+      if(s>0) m[n.id]=s;
+    });
+    return m;
+  },[norm,todayStr]);
+  useEffect(()=>{ newStrengthRef.current=newStrengthByNode; },[newStrengthByNode]);
 
   // Momentum: entity*2 + connection*3 + decision_resolved*30 + task_done*50 + capture*8 + lines_processed*4
   let decResolved=0, taskDone=0;
@@ -556,7 +584,8 @@ export default function App() {
         new THREE.MeshBasicMaterial({color:0xF5B344,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})); ng.add(alertHalo);
       const label=textSprite(node.label,"#AEB7D4",false); label.position.set(0,r+7,0); ng.add(label);
       const badge=badgeSprite(0); badge.position.set(r*1.1,r*1.1,0); badge.visible=false; ng.add(badge);
-      refsRef.current[node.id]={ng,core,typeHalo,alertHalo,badge,r};
+      const newRing=ringSprite(); const nr=r*3.4; newRing.scale.set(nr,nr,1); newRing.visible=false; ng.add(newRing); // "new" ice ring
+      refsRef.current[node.id]={ng,core,typeHalo,alertHalo,badge,newRing,r};
       return ng;
     }
 
@@ -649,8 +678,13 @@ export default function App() {
         R.core.scale.lerp(new THREE.Vector3(ts,ts,ts),0.2);
         // Fade dimmed nodes' bodies and labels; connected nodes stay full-strength.
         R.core.material.opacity += ((dim?0.18:1) - R.core.material.opacity)*0.2;
-        R.ng.children.forEach(ch=>{ if(ch.isSprite && ch!==R.badge) ch.material.opacity += ((dim?0.12:1) - ch.material.opacity)*0.2; });
+        R.ng.children.forEach(ch=>{ if(ch.isSprite && ch!==R.badge && ch!==R.newRing) ch.material.opacity += ((dim?0.12:1) - ch.material.opacity)*0.2; });
         const lit = dim?0.18:1;
+        // "New node" ice ring: opacity tracks the created-recency strength (dim-aware),
+        // independent of glow/badge mode. Coexists with the amber open-items glow.
+        const fresh=newStrengthRef.current[n.id]||0;
+        R.newRing.visible = fresh>0;
+        if(fresh>0) R.newRing.material.opacity += ((fresh*lit) - R.newRing.material.opacity)*0.2;
         if(md==="glow"){ R.badge.visible=false; R.typeHalo.material.opacity=0.1*lit;
           const pulse=0.12+0.10*Math.sin(clock*1.4);
           R.alertHalo.material.opacity = (open>0 ? pulse : 0)*lit;
