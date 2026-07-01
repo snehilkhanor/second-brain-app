@@ -601,11 +601,17 @@ export default function App() {
     Graph.cameraPosition({z:300});   // initial pre-settle distance (was 210)
 
     // As the brain grows a fixed distance goes stale, so once the layout settles
-    // we auto-frame the whole cloud (with padding). We reframe on each settle until
-    // the user first touches the graph (so the live graph reframes after the cached
-    // one loads), then never again. The user can pinch/drag freely afterwards.
-    // REVERT: delete this line + restore z:210 above.
-    Graph.onEngineStop(()=>{ if(!userMoved) Graph.zoomToFit(700,90); });
+    // we auto-frame the whole cloud. zoomToFit frames node CENTRES, but our spheres
+    // + halos are large and spill past them, so we then pull the camera straight back
+    // from the graph centre by a margin. We reframe on each settle until the user
+    // first touches the graph (so the live graph reframes after the cached one loads),
+    // then never again. Pinch/drag stay free. REVERT: delete this block + restore z:210.
+    Graph.onEngineStop(()=>{
+      if(userMoved) return;
+      Graph.zoomToFit(0,60);                    // instant fit of node centres
+      const t=Graph.controls().target, c=Graph.cameraPosition(), k=1.55;  // extra pull-back for sphere/halo size
+      Graph.cameraPosition({x:t.x+(c.x-t.x)*k, y:t.y+(c.y-t.y)*k, z:t.z+(c.z-t.z)*k}, undefined, 700);
+    });
 
     // Obsidian-style auto-spin until the user grabs the graph or selects a node.
     const controls=Graph.controls();
