@@ -150,7 +150,10 @@ function ringSprite(){
   const cx=S/2, cy=S/2, rad=S*0.40;
   x.shadowColor="rgba(150,200,255,0.65)"; x.shadowBlur=22;   // soft cool glow around the line
   x.strokeStyle="rgba(228,242,255,0.95)"; x.lineWidth=6; x.beginPath(); x.arc(cx,cy,rad,0,Math.PI*2); x.stroke();
-  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; t.generateMipmaps=false;
+  // Mipmaps (512 is power-of-two): trilinear minFilter keeps the ring smooth when shrunk
+  // onto small / zoomed-out nodes (a non-mipmapped texture aliases into a jagged dashed ring),
+  // while LinearFilter magFilter keeps it crisp when blown up onto large nodes.
+  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearMipmapLinearFilter; t.magFilter=THREE.LinearFilter; t.generateMipmaps=true;
   const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false,opacity:0}));
   return s;
 }
